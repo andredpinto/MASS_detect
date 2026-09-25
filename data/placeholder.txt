@@ -1,2 +1,0 @@
-This is the directory where the scripts and notebooks expect the data to be.
-The data MUST NOT be uploaded to gitlab (you probably couldn't anyway), this directory is only here as an indicator of where the data is expected to be.
