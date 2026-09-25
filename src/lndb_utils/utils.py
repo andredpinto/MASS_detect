@@ -59,9 +59,9 @@ def convertToWorldCoord(xyz,origin,transfmat_toworld):
 
 def extractCube(scan,spacing,xyz,cube_size=80,cube_size_mm=51):
     # Extract cube of cube_size^3 voxels and world dimensions of cube_size_mm^3 mm from scan at image coordinates xyz
-    xyz = np.array([xyz[i] for i in [2,1,0]],np.int)
+    xyz = np.array([xyz[i] for i in [2,1,0]],int)
     spacing = np.array([spacing[i] for i in [2,1,0]])
-    scan_halfcube_size = np.array(cube_size_mm/spacing/2,np.int)
+    scan_halfcube_size = np.array(cube_size_mm/spacing/2,int)
     if np.any(xyz<scan_halfcube_size) or np.any(xyz+scan_halfcube_size>scan.shape): # check if padding is necessary
         maxsize = max(scan_halfcube_size)
         scan = np.pad(scan,((maxsize,maxsize,)),'constant',constant_values=0)
