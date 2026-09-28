@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.10,<3.11"
 dependencies = [
+    "jupyter>=1.1.1",
     "matplotlib>=3.10.9",
     "numpy>=2.2.6",
     "pandas>=2.3.3",
@@ -12,7 +13,6 @@ dependencies = [
     "pyradiomics",
     "scikit-learn>=1.7.2",
     "scipy>=1.15.3",
-    "setuptools>=84.0.0",
     "simpleitk>=2.5.6",
 ]
 
