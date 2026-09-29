@@ -35,7 +35,8 @@ def writeMhd(filename,scan,spacing,origin,transfmat):
     itkim.SetDirection(transfmat) #3D rotation matrix
     sitk.WriteImage(itkim, filename, False)    
 
-def getImgWorldTransfMats(spacing,transfmat):
+def getImgWorldTransfMats(spacing,transfmat) -> tuple[np.ndarray,np.ndarray]:
+    """Returns (transfmat_toimg,transfmat_toworld)"""
     # calc image to world to image transformation matrixes
     transfmat = np.array([transfmat[0:3],transfmat[3:6],transfmat[6:9]])
     for d in range(3):
@@ -58,13 +59,15 @@ def convertToWorldCoord(xyz,origin,transfmat_toworld):
     return xyz
 
 def extractCube(scan,spacing,xyz,cube_size=80,cube_size_mm=51):
+    """Scan and spacing are from readMhd, xyz is in image coordinates,
+    cube_size in voxels, cube_size_mm in mm. Returns cube of size cube_size^3 voxels."""
     # Extract cube of cube_size^3 voxels and world dimensions of cube_size_mm^3 mm from scan at image coordinates xyz
     xyz = np.array([xyz[i] for i in [2,1,0]],int)
-    spacing = np.array([spacing[i] for i in [2,1,0]])
+    spacing = np.array([spacing[i] for i in [2,1,0]])   # Reversing oriders to match numpy array indexing (z,y,x) - (slice,row,column)
     scan_halfcube_size = np.array(cube_size_mm/spacing/2,int)
-    if np.any(xyz<scan_halfcube_size) or np.any(xyz+scan_halfcube_size>scan.shape): # check if padding is necessary
+    if np.any(xyz<scan_halfcube_size) or np.any(xyz+scan_halfcube_size>scan.shape): # check if padding is necessary (exceeds scan boundaries)
         maxsize = max(scan_halfcube_size)
-        scan = np.pad(scan,((maxsize,maxsize,)),'constant',constant_values=0)
+        scan = np.pad(scan,((maxsize,maxsize,)),'constant',constant_values=0)   # !!!! Padding with zeros, might be better to use edge values (like -1000 (HU) - air)
         xyz = xyz+maxsize
     
     scancube = scan[xyz[0]-scan_halfcube_size[0]:xyz[0]+scan_halfcube_size[0], # extract cube from scan at xyz
