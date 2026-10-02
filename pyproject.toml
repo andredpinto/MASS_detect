@@ -16,15 +16,15 @@ dependencies = [
     "simpleitk>=2.5.6",
 ]
 
-[project.scripts]
-mass-detect = "mass_detect:main"
+#[project.scripts]
+#mass-detect = "mass_detect:main"
 
 [build-system]
 requires = ["uv_build>=0.12.16,<0.13.0"]
 build-backend = "uv_build"
 
 [tool.uv]
-package = false
+package = true
 
 [tool.uv.sources]
 pyradiomics = { git = "https://github.com/AIM-Harvard/pyradiomics" }

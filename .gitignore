@@ -6,3 +6,4 @@ masks
 AGENTS.md
 __pycache__
 tmp/
+.vscode
