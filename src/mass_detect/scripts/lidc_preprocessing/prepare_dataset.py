@@ -55,8 +55,12 @@ class MakeDataSet:
         for patient in self.IDRI_list:
             pid = patient
             scan = pl.query(pl.Scan).filter(pl.Scan.patient_id == pid).first()
-            nodules_annotation = scan.cluster_annotations()
-            vol = scan.to_volume()
+            try:
+                nodules_annotation = scan.cluster_annotations()
+                vol = scan.to_volume()
+            except:
+                print(f"Something wrong with patient {pid}... Oh well, moving on")
+                continue
             print("Patient ID: {} Dicom Shape: {} Number of Annotated Nodules: {}".format(pid, vol.shape, len(nodules_annotation)))
 
             if len(nodules_annotation) == 0:
