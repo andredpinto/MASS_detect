@@ -1,7 +1,6 @@
 import SimpleITK as sitk
 # We could use the lndb_utils/utils.py for handling of mhd files, but these use SimpleITK anyway,
 # so might as well go to the source
-import numpy as np
 from pathlib import Path
 
 def resample_image(image: sitk.Image, target_spacing: float, is_mask=False):
@@ -60,6 +59,7 @@ if __name__ == "__main__":
         sitk.WriteImage(resampled, f"{OUTPUT_DIR}/{filename}_resampled.mhd")
 
         masks = set(masks_path.glob(filename + "_rad*.mhd"))
+        # IMPORTANT: It is assumed that the image and mask have the same original size and spacing
         if len(masks) < 1:
             print(f"WARNING: Found no mask for image {filename}")
         else:
