@@ -59,8 +59,9 @@ class MakeDataSet:
                 nodules_annotation = scan.cluster_annotations()
                 vol = scan.to_volume()
             except:
-                print(f"Something wrong with patient {pid}... Oh well, moving on")
+                print(f"WARNING: Something wrong reading patient {pid}... Oh well, moving on")
                 continue
+
             print("Patient ID: {} Dicom Shape: {} Number of Annotated Nodules: {}".format(pid, vol.shape, len(nodules_annotation)))
 
             if len(nodules_annotation) == 0:
@@ -92,8 +93,11 @@ class MakeDataSet:
                 mask_sitk.SetSpacing(spacing_zyx[::-1])
 
                 # Save as .mhd (SimpleITK writes .mhd + .raw pair)
-                sitk.WriteImage(volume_sitk, image_path)
-                sitk.WriteImage(mask_sitk, mask_path)
+                try:
+                    sitk.WriteImage(volume_sitk, image_path)
+                    sitk.WriteImage(mask_sitk, mask_path)
+                except:
+                    print(f"WARNING: Failed to write images for patient {pid}")
 
                 # Save metadata
                 meta_list = [pid, nodule_idx, image_name, mask_name, malignancy, cancer_label]
