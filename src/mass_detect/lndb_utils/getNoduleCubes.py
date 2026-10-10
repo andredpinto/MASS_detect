@@ -1,8 +1,8 @@
 import numpy as np
 import copy
 from matplotlib import pyplot as plt
-from src.lndb_utils.utils import readMhd, readCsv, getImgWorldTransfMats, convertToImgCoord, extractCube
-from src.lndb_utils.readNoduleList import nodEqDiam
+from src.mass_detect.lndb_utils.utils import readMhd, readCsv, getImgWorldTransfMats, convertToImgCoord, extractCube
+from src.mass_detect.lndb_utils.readNoduleList import nodEqDiam
 
 dispFlag = False
 

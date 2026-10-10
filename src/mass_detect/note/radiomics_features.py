@@ -5,7 +5,7 @@ import SimpleITK as sitk
 import logging
 import numpy as np
 import pandas as pd
-from .config import LNDB_DIR, PATCHES_DIR, REPO_ROOT
+from .config import LNDB_DIR, NODULE_TABLE, PATCHES_DIR
 from .features import HU_RANGE, segment_from_centre
 from .patches import extract_patch
 
@@ -47,7 +47,7 @@ def _work(item):
     except Exception as error: return {"patch_id": patch_id, "roi": roi, "error": str(error)} # one failing region must not stop the run
 
 def training_items(): # Automatic mask and every radiologist mask of each rated LNDb training nodule.
-    table = pd.read_csv(REPO_ROOT / "notebooks" / "nodule_table.csv")
+    table = pd.read_csv(NODULE_TABLE)
     rated = table[(table["dataset"] == "LNDb") & table["mal_mean"].notna()]
     merged = pd.read_csv(LNDB_DIR / "LNDb_csvs" / "trainNodules_gt.csv")
     merged["nodule_uid"] = [f"LNDb-{c:04d}_{f}" for c, f in zip(merged["LNDbID"], merged["FindingID"])]

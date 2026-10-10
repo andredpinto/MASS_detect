@@ -1,8 +1,8 @@
 """Unit tests (run with: pytest tests)."""
 import SimpleITK as sitk
 import numpy as np
-from src.config import AIR_HU, CENTRE_INDEX, PATCH_SIZE
-from src.patches import extract_patch
+from src.mass_detect.note.config import AIR_HU, CENTRE_INDEX, PATCH_SIZE
+from src.mass_detect.note.patches import extract_patch
 
 BACKGROUND_HU = -1000
 BLOB_SIGMA_MM = 4.0

@@ -1,4 +1,4 @@
-"""Paths and constants shared by every notebook and by the other modules of src/."""
+"""Paths and constants shared by every notebook and by the other modules of src/mass_detect/note/."""
 import os
 from pathlib import Path
 
@@ -6,7 +6,7 @@ PATCH_SIZE = 64                        # Voxels per side
 SPACING_MM = 1.0                       # Voxel size of the patch
 CENTRE_INDEX = PATCH_SIZE // 2         # Voxel that holds the centre: 32
 AIR_HU = -1024                         # Value used outside the CT, the floor of the usual HU normalisation
-REPO_ROOT = Path(__file__).resolve().parents[1]   # repository root (the folder that holds src/ and notebooks/)
+REPO_ROOT = Path(__file__).resolve().parents[3]   # repository root: note -> mass_detect -> src -> root (holds src/, notebooks/, data/)
 DATA_DIR = Path(os.environ.get("MASS_DATA_DIR", REPO_ROOT / "data")) #where our 'data' folder is located
 LNDB_DIR = DATA_DIR / "LNDb"           # LNDb dataset location
 PATCHES_DIR = DATA_DIR / "patches"     # Patches location

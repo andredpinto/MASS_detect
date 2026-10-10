@@ -1,6 +1,6 @@
 import numpy as np
 import math
-from src.lndb_utils.utils import readCsv, writeCsv
+from src.mass_detect.lndb_utils.utils import readCsv, writeCsv
 
 def nodEqDiam(vol):
     # Calc nodule equivalent diameter from volume vol

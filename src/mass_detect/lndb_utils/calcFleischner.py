@@ -1,8 +1,8 @@
 import numpy as np
 import itertools
 import math
-from src.lndb_utils.utils import readCsv
-from src.lndb_utils.readNoduleList import joinNodules
+from src.mass_detect.lndb_utils.utils import readCsv
+from src.mass_detect.lndb_utils.readNoduleList import joinNodules
 
 def calcCTFleischnerProb(nd,nn,v0,v1,v2,t0,t1,t2,verb=False):
     # Compute probability of belonging to each Fleischner class if given lists with:
