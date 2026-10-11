@@ -10,6 +10,7 @@ import warnings
 import SimpleITK as sitk
 import pylidc as pl
 from statistics import median_high
+from pathlib import Path
 
 from pylidc.utils import consensus
 
@@ -17,7 +18,8 @@ warnings.filterwarnings(action='ignore')
 
 # === Configuration ===
 DICOM_DIR = "data/LIDC/lidc_idri"
-OUTPUT_DIR = "data/processed"
+OUTPUT_DIR = "data/nodules/train"
+META_FILE = "meta_info_lidc.csv"
 MASK_THRESHOLD = 50
 CONFIDENCE_LEVEL = 0.5
 PADDING_SIZE = 10
@@ -30,7 +32,15 @@ class MakeDataSet:
         self.mask_threshold = mask_threshold
         self.c_level = confidence_level
         self.padding = [(padding, padding), (padding, padding), (0, 0)]
-        self.meta = pd.DataFrame(columns=['patient_id', 'nodule_idx', 'image_path', 'mask_path', 'malignancy', 'is_cancer'])
+        header = ['patient_id', 'nodule_idx', 'image_path', 'mask_path', 'malignancy', 'is_cancer']
+        self.meta = Path(OUTPUT_DIR, META_FILE)
+        if self.meta.exists():
+            with open(self.meta, "r") as meta:
+                meta_header = meta.readline()
+                if meta_header == ",".join(header)+'\n':
+                    return
+        with open(self.meta, "w") as meta:
+            meta.write(",".join(header) + '\n')
 
     def calculate_malignancy(self, nodule):
         """Calculate malignancy score and cancer label from radiologist annotations."""
@@ -44,9 +54,9 @@ class MakeDataSet:
             return malignancy, 'Ambiguous'
 
     def save_meta(self, meta_list):
-        """Append a row to the metadata DataFrame."""
-        tmp = pd.Series(meta_list, index=['patient_id', 'nodule_idx', 'image_path', 'mask_path', 'malignancy', 'is_cancer'])
-        self.meta = pd.concat([self.meta, tmp.to_frame().T], ignore_index=True)
+        """Append a row to the metadata csv."""
+        with open(self.meta, "a") as meta:
+            meta.write(",".join(meta_list) + '\n')
 
     def prepare_dataset(self):
         """Process all patients: extract 3D nodule volumes and save as .mhd files."""
@@ -68,6 +78,15 @@ class MakeDataSet:
                 continue  # Skip clean patients (no nodules to extract)
 
             for nodule_idx, nodule in enumerate(nodules_annotation):
+                # Build 3D file paths
+                image_name = "{}_nodule{}.mhd".format(pid, nodule_idx)
+                mask_name = "{}_nodule{}_mask.mhd".format(pid, nodule_idx)
+                image_path = os.path.join(self.output_dir, image_name)
+                mask_path = os.path.join(self.output_dir, mask_name)
+                # Check if both files already exist
+                if Path(image_path).exists() and Path(mask_path).exists():
+                    continue
+
                 mask, cbbox, masks = consensus(nodule, self.c_level, self.padding)
                 lung_np_array = vol[cbbox]
 
@@ -76,12 +95,6 @@ class MakeDataSet:
                     continue
 
                 malignancy, cancer_label = self.calculate_malignancy(nodule)
-
-                # Build 3D file paths
-                image_name = "{}_nodule{}.mhd".format(pid, nodule_idx)
-                mask_name = "{}_nodule{}_mask.mhd".format(pid, nodule_idx)
-                image_path = os.path.join(self.output_dir, image_name)
-                mask_path = os.path.join(self.output_dir, mask_name)
 
                 # Convert to SimpleITK images
                 volume_sitk = sitk.GetImageFromArray(lung_np_array)
@@ -101,15 +114,15 @@ class MakeDataSet:
 
                 # Save metadata
                 meta_list = [pid, nodule_idx, image_name, mask_name, malignancy, cancer_label]
+                meta_list = [str(i) for i in meta_list] # Necessary to write to the csv
                 self.save_meta(meta_list)
-
-        print("Saved Meta data")
-        self.meta.to_csv(os.path.join(self.output_dir, 'meta_info_lidc.csv'), index=False)
 
 
 if __name__ == '__main__':
     LIDC_IDRI_list = [f for f in os.listdir(DICOM_DIR) if not f.startswith('.')]
     LIDC_IDRI_list.sort()
+
+    Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
 
     dataset = MakeDataSet(LIDC_IDRI_list, OUTPUT_DIR, MASK_THRESHOLD, PADDING_SIZE, CONFIDENCE_LEVEL)
     dataset.prepare_dataset()
