@@ -36,6 +36,7 @@ def describe_annotation(annotation, slice_positions_mm, pixel_spacing_mm): # Kee
     z_mm = np.interp(slice_index, np.arange(len(slice_positions_mm)), slice_positions_mm)
     volume = float(annotation.volume)
     return {
+        "id": annotation.id,
         "malignancy": float(annotation.malignancy),
         "voxel_centre": (row, col, slice_index),
         "centre_mm": np.array([col * pixel_spacing_mm, row * pixel_spacing_mm, z_mm]),
@@ -134,6 +135,7 @@ def build_lidc_table():
                 "kernel": kernel,
                 "kvp": float(getattr(header, "KVP", np.nan)),
                 "vox_row": row, "vox_col": col, "vox_slice": slice_index,
+                "annotation_ids": ";".join(str(a["id"]) for a in annotations),
             })
         if position % 200 == 0:
             print(f"{position}/{len(all_scans)} scans")

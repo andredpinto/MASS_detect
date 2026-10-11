@@ -16,6 +16,14 @@ FEATURES_FILE = PATCHES_DIR / "features.csv"
 MASK_FILE = LNDB_DIR / "LNDb_masks" / "masks" / "LNDb-{ct:04d}_rad{rad}.mhd"
 QC_FIGURE_FILE = REPO_ROOT / "reports" / "figures" / "patch_qc.png"
 READER_RATINGS_FILE = PATCHES_DIR / "lidc_reader_ratings.csv"
+LNDB_MANIFEST_FILE = PATCHES_DIR / "manifest_train.csv"   # where each LNDb training patch was cut
+LIDC_MANIFEST_FILE = PATCHES_DIR / "manifest_lidc.csv"    # where each LIDC patch was cut, and whether its position was confirmed
+
+# Radiologists' regions (src/mass_detect/note/rois.py)
+ROI_DIR = PATCHES_DIR / "rois"                              # one .npz per nodule: every reader mask and the consensus mask
+READINGS_FILE = PATCHES_DIR / "readings.csv"                # one row per reading: nodule, reader, rating
+ROI_RADIOMICS_FILE = PATCHES_DIR / "radiomics_rois.csv"     # PyRadiomics features of every region
+ROI_ICC_FILE = PATCHES_DIR / "radiomics_rois_icc.csv"       # robustness of every feature between two readers
 
 # Intermediate tables written by notebooks 01 and 02 and read by notebook 03
 LNDB_NODULES_FILE = REPO_ROOT / "notebooks" / "lndb_nodules.csv"

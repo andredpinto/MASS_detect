@@ -20,6 +20,7 @@ SCHEMA = [
     "lobe",                   # LNDb only: 1 LUL, 2 LLL, 3 RUL, 4 ML, 5 RLL
     "slice_thickness_mm", "pixel_spacing_mm", "manufacturer", "model", "kernel", "kvp",
     "vox_row", "vox_col", "vox_slice",  # LIDC only: centre in voxel indices, to cut patches later
+    "annotation_ids",         # LIDC only: pylidc ids of the annotations merged into this nodule, separated by ";"
 ]
 
 
