@@ -166,7 +166,7 @@ def extract_roi_radiomics(cohort, processes=12): # Saves one row per region to R
     print(f"{len(features)} regions from {len(items)} nodules in {time.time() - started:.0f} s")
     return features
 
-def feature_names(features): # The PyRadiomics columns: original image and Laplacian of Gaussian images
+def radiomic_columns(features): # The PyRadiomics columns: original image and Laplacian of Gaussian images
     return [c for c in features.columns if c.startswith(("original_", "log-"))]
 
 def add_roi_diameters(features): # Size of the radiologists' region, from the PyRadiomics shape features
@@ -187,7 +187,7 @@ def first_two_readers(rows, names): # Feature values of the first two readers of
 
 def reader_icc(features, readings): # ICC(2,1) of every feature between two readers of the same nodule, in each dataset.
     # A feature is robust when its ICC is at least ROBUST_ICC in both datasets.
-    names = feature_names(features)
+    names = radiomic_columns(features)
     dataset_of = readings.drop_duplicates("patch_id").set_index("patch_id")["dataset"]
     reader_rows = features[features["roi"] != "consensus"]
     table = pd.DataFrame({"feature": names})
