@@ -41,7 +41,7 @@ Not in version control — generated locally, safe to delete and rebuild.
 | `data/nodules/<patient>_noduleNNN.mhd` + `_mask.mhd` | `lidc_preprocessing.py` |
 | `data/nodules/meta_info_lidc.csv` | `lidc_preprocessing.py` (end of run) or `lidc_labels.py` (run manually if script doesn't end)|
 | `data/nodules/lidc_labels.csv` | `lidc_labels.py` |
-| `data/nodules/train/`, `data/nodules/test/` — `LNDb-XXXX_noduleNNN.mhd` + `_mask.mhd` + `lndb_manifest.csv` | `prepare_lndb_nodules.py` |
+| `data/nodules/train/`, `data/nodules/test/` — `LNDb-XXXX_noduleNNN.mhd` + `_mask.mhd` + `meta_info_lndb.csv` | `lndb_preprocessing.py` |
 | `data/radiomics_features.csv` | `extract_features_pyrad.py` |
 | `data/radiomics_features_processed.csv`, `radiomics_kept_features.csv`, `radiomics_processing_report.csv` | notebook 01 |
 | `data/cv_metrics.csv`, `oof_predictions.csv`, `test_predictions.csv` | notebook 02 |
@@ -73,9 +73,9 @@ order and the commands.
 .venv-lidc/bin/python -m src.mass_detect.scripts.lidc_preprocessing
 
 # 2. LNDb — cubes + masks
-uv run python -m src.mass_detect.scripts.prepare_lndb_nodules \
+uv run python -m src.mass_detect.scripts.lndb_preprocessing \
     --findings-csv data/trainNodules_gt.csv --split train
-uv run python -m src.mass_detect.scripts.prepare_lndb_nodules \
+uv run python -m src.mass_detect.scripts.lndb_preprocessing \
     --findings-csv data/testNodules.csv --split test
 
 # 3. features
@@ -99,12 +99,9 @@ src/mass_detect/
   scripts/
     lidc_preprocessing.py        LIDC-IDRI -> volumes + consensus masks
     lidc_labels.py               LIDC malignancy labels
-    prepare_lndb_nodules.py      LNDb -> cubes + radiologist-consensus masks,
+    lndb_preprocessing.py         LNDb -> cubes + radiologist-consensus masks,
                                   + malignancy/is_cancer in the train manifest
     extract_features_pyrad.py    volumes + masks -> PyRadiomics feature table
-    join_lndb_characteristics.py joins lndb_processed.csv onto the features
-    resampling.py                resampling helper (currently unused; PyRadiomics
-                                 does the resampling, per Params.yml)
   lndb_utils/                    utilities shipped with the LNDb dataset
 
 notebooks/
@@ -134,8 +131,9 @@ changing it in one place means re-running the pipeline.
 - `notebooks/lndb_processed.csv` keys its rows by the **radiologist's** finding
   number, not by the nodule group of `trainNodules_gt.csv`, and its `x/y/z` are
   voxel indices. Anything that binds it to a finding must therefore do it **by
-  position**: `prepare_lndb_nodules.py` does (within 3 mm), while
-  `join_lndb_characteristics.py` still joins on the id and so mislabels roughly
-  a third of the LNDb rows.
+  position**: `lndb_preprocessing.py` does (within 3 mm). Notebook 01's fallback
+  labels (used when `chars_trainNodules.csv` is absent) still join on the id, so
+  they mislabel roughly a third of the LNDb rows — prefer the manifest's
+  `malignancy` there.
 - Only LNDb nodules are ever *validated*, since the competition test set is
   LNDb. LIDC, when enabled, is training-only.

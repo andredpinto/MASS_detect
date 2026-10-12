@@ -27,10 +27,10 @@ plus meta_info_lidc.csv (malignancy labels). Processes the whole LIDC-IDRI
 
 2. LNDb  --  30 mm cubes + nodule masks
 ---------------------------------------
-$ uv run python -m src.mass_detect.scripts.prepare_lndb_nodules --findings-csv data/trainNodules_gt.csv --split train --out-dir data/lndb_nodules
-$ uv run python -m src.mass_detect.scripts.prepare_lndb_nodules --findings-csv data/testNodules.csv    --split test  --out-dir data/lndb_nodules
+$ uv run python -m src.mass_detect.scripts.lndb_preprocessing --findings-csv data/trainNodules_gt.csv --split train --out-dir data/lndb_nodules
+$ uv run python -m src.mass_detect.scripts.lndb_preprocessing --findings-csv data/testNodules.csv    --split test  --out-dir data/lndb_nodules
 
-Writes <out-dir>/<split>/LNDb-XXXX_noduleY.mhd + _mask.mhd + lndb_manifest.csv.
+Writes <out-dir>/<split>/LNDb-XXXX_noduleY.mhd + _mask.mhd + meta_info_lndb.csv.
 (--out-dir keeps the LNDb cubes apart from the LIDC ones; the default is data/nodules.)
 For the train split the manifest also carries malignancy and is_cancer, read from
 notebooks/lndb_processed.csv and bound to each finding by position (within 3 mm),

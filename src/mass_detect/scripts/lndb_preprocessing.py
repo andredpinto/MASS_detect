@@ -56,16 +56,16 @@ WHAT A CUBE IS
 USAGE (from the repository root)
 --------------------------------
     # training findings (needs tmp/trainNodules_gt.csv and data/LNDb/)
-    uv run python -m src.mass_detect.scripts.prepare_lndb_nodules \
+    uv run python -m src.mass_detect.scripts.lndb_preprocessing \
         --findings-csv tmp/trainNodules_gt.csv --split train
 
     # competition test candidates (needs the test CTs extracted from
     # testdata0.rar / testdata1.rar into data/testdata0, data/testdata1)
-    uv run python -m src.mass_detect.scripts.prepare_lndb_nodules \
+    uv run python -m src.mass_detect.scripts.lndb_preprocessing \
         --findings-csv data/testNodules.csv --split test
 
 Outputs go to ``data/nodules/<split>/`` (see ``--out-dir``): ``LNDb-XXXX_noduleNNN.mhd``
-(volume), ``LNDb-XXXX_noduleNNN_mask.mhd`` (mask) and ``lndb_manifest.csv``
+(volume), ``LNDb-XXXX_noduleNNN_mask.mhd`` (mask) and ``meta_info_lndb.csv``
 (one row per finding, with the nodule's ``malignancy`` and ``is_cancer`` when
 ``notebooks/lndb_processed.csv`` can be matched to it). The nodule id follows
 the same ``<dataset>-<image>_nodule<n>`` scheme as ``lidc_preprocessing.py``,
@@ -346,7 +346,7 @@ def main(argv=None) -> None:
 
     out_dir = Path(args.out_dir) / args.split
     out_dir.mkdir(parents=True, exist_ok=True)
-    manifest_path = out_dir / "lndb_manifest.csv"
+    manifest_path = out_dir / "meta_info_lndb.csv"
 
     # A previous run's manifest is reused for the rows it already has, so the
     # script can be interrupted and continued (a cube is skipped when its

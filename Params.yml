@@ -15,7 +15,7 @@
 # WHY RESAMPLE TO 1 mm ISOTROPIC (change from the previous file, which disabled
 # resampling): the LIDC nodule volumes in data/processed are anisotropic (in-plane
 # pixel spacing 0.4-0.9 mm, slice thickness up to several mm), while the LNDb
-# cubes cut by prepare_lndb_nodules.py are already 1 mm isotropic. Texture
+# cubes cut by lndb_preprocessing.py are already 1 mm isotropic. Texture
 # features (GLCM/GLRLM/GLSZM/GLDM/NGTDM) depend on voxel size:
 #   Shafiq-ul-Hassan M. et al. (2017), Medical Physics 44(3):1050-1062,
 # and the IBSI recommends isotropic voxels before computing features so that one
@@ -55,7 +55,7 @@ setting:
   # calibrated units such as HU).
   binWidth: 25
   # Label value of the nodule in the mask. Both the LIDC consensus masks
-  # (lidc_preprocessing.py) and the LNDb masks (prepare_lndb_nodules.py) store
+  # (lidc_preprocessing.py) and the LNDb masks (lndb_preprocessing.py) store
   # the nodule as label 1.
   label: 1
   # Interpolator used when resampling to the isotropic grid (see above).

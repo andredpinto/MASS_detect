@@ -15,7 +15,7 @@ The input directories are produced by *preprocessing* scripts, not by this one:
                                AGENTS.md). Run it on the whole dataset before
                                expecting every LIDC nodule to be here.
 * ``data/nodules/<split>``  -> LNDb 64 mm cubes around every finding + masks,
-                               produced by ``scripts/prepare_lndb_nodules.py``
+                               produced by ``scripts/lndb_preprocessing.py``
                                (automatic segmentation from the nodule centre,
                                the same procedure for training and test rows).
 
