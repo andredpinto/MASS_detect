@@ -18,7 +18,7 @@ warnings.filterwarnings(action='ignore')
 
 # === Configuration ===
 DICOM_DIR = "data/LIDC/lidc_idri"
-OUTPUT_DIR = "data/nodules/train"
+OUTPUT_DIR = "data/nodules/"
 META_FILE = "meta_info_lidc.csv"
 MASK_THRESHOLD = 50
 CONFIDENCE_LEVEL = 0.5
