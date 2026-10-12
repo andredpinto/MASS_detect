@@ -99,7 +99,8 @@ src/mass_detect/
   scripts/
     lidc_preprocessing.py        LIDC-IDRI -> volumes + consensus masks
     lidc_labels.py               LIDC malignancy labels
-    prepare_lndb_nodules.py      LNDb -> cubes + radiologist-consensus masks
+    prepare_lndb_nodules.py      LNDb -> cubes + radiologist-consensus masks,
+                                  + malignancy/is_cancer in the train manifest
     extract_features_pyrad.py    volumes + masks -> PyRadiomics feature table
     join_lndb_characteristics.py joins lndb_processed.csv onto the features
     resampling.py                resampling helper (currently unused; PyRadiomics
@@ -111,7 +112,8 @@ notebooks/
   01_radiomics_features_analysis.ipynb   clean, filter, attach labels
   02_train_model_and_predict.ipynb      validation + final model
   explorar_lndb.ipynb            LNDb data exploration
-  lndb_processed.csv             per-nodule LNDb characteristics (tracked)
+  lndb_processed.csv             per-nodule LNDb characteristics (tracked); the
+                                 train manifest gets its malignancy from here
 
 Params.yml                       PyRadiomics settings (bin width, resampling, features)
 info/                            notes, pipeline description, dataset guides
@@ -129,5 +131,11 @@ changing it in one place means re-running the pipeline.
 
 - The test split needs its CTs extracted separately; as written, its mask step
   expects `RadID`/`RadFindingID` columns that only the training CSV has.
+- `notebooks/lndb_processed.csv` keys its rows by the **radiologist's** finding
+  number, not by the nodule group of `trainNodules_gt.csv`, and its `x/y/z` are
+  voxel indices. Anything that binds it to a finding must therefore do it **by
+  position**: `prepare_lndb_nodules.py` does (within 3 mm), while
+  `join_lndb_characteristics.py` still joins on the id and so mislabels roughly
+  a third of the LNDb rows.
 - Only LNDb nodules are ever *validated*, since the competition test set is
   LNDb. LIDC, when enabled, is training-only.

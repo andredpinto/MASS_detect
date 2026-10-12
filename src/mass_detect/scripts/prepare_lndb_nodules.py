@@ -25,6 +25,30 @@ radiologist segmented are recorded in the manifest instead of written out, so
 PyRadiomics only ever sees ROIs it can measure. See ``merge_masks`` and
 ``radiologist_mask`` below, and ``--min-mask-mm3`` to tune the size floor.
 
+LABELS
+------
+``notebooks/lndb_processed.csv`` is the per-nodule table written by
+``notebooks/explorar_lndb.ipynb``: one row per LNDb nodule, with the
+characteristics the radiologists agreed on, among them ``malignancy``. Two of
+its columns make it unusable as an input to this script:
+
+* its ``x``/``y``/``z`` are **voxel indices**, not the world mm the findings
+  file holds;
+* its ``finding_id`` is the *radiologist's* finding number (the notebook
+  groups ``trainNodules.csv``, one row per reading), while this script keys on
+  the nodule group id of ``trainNodules_gt.csv``. The two agree only when the
+  numbering happens to coincide, so joining on them silently attaches a rating
+  to the wrong nodule for about a third of the rows.
+
+So the file is used for the *label only*, bound to the findings **by
+position``: each of its centres is turned into world mm with the CT's own
+transform and matched to the finding centroids within ``--label-radius`` mm,
+keeping only unambiguous matches. Findings that no row matches keep an empty
+``malignancy``. ``is_cancer`` follows the LIDC convention of
+``lidc_preprocessing.py``: above 3 is True, below 3 False, exactly 3
+``'Ambiguous'``. Labels are looked up for ``--split train`` only, since the
+competition test candidates have no ratings; ``--labels-csv ""`` skips them.
+
 WHAT A CUBE IS
 --------------
 * CUBE_SIZE_MM per side
@@ -42,9 +66,10 @@ USAGE (from the repository root)
 
 Outputs go to ``data/nodules/<split>/`` (see ``--out-dir``): ``LNDb-XXXX_noduleNNN.mhd``
 (volume), ``LNDb-XXXX_noduleNNN_mask.mhd`` (mask) and ``lndb_manifest.csv``
-(one row per finding). The nodule id follows the same
-``<dataset>-<image>_nodule<n>`` scheme as ``lidc_preprocessing.py``, so both
-datasets share one identifier across every step of the pipeline.
+(one row per finding, with the nodule's ``malignancy`` and ``is_cancer`` when
+``notebooks/lndb_processed.csv`` can be matched to it). The nodule id follows
+the same ``<dataset>-<image>_nodule<n>`` scheme as ``lidc_preprocessing.py``,
+so both datasets share one identifier across every step of the pipeline.
 """
 
 from __future__ import annotations
@@ -65,6 +90,7 @@ DEFAULT_CT_DIR = "data/LNDb"          # training CTs
 DEFAULT_MASKS_DIR = "data/LNDb/masks"  # radiologist masks (radiologist mode)
 DEFAULT_OUT_DIR = "data/nodules"
 DEFAULT_FINDINGS = "data/trainNodules_gt.csv"
+DEFAULT_LABELS = "notebooks/lndb_processed.csv"  # malignancy, matched by position
 
 CUBE_SIZE_MM = 30.0      # physical side of the cube
 SPACING_MM = 1.0         # voxel size of the cube (isotropic)
@@ -79,6 +105,11 @@ AIR_HU = -1024           # value used for voxels outside the CT
 # supports meaningful features. Smaller masks are reported as
 # ``mask_too_small`` instead of being written out.
 MIN_MASK_MM3 = 20.0
+
+# How far a nodule centre may sit from a finding centroid and still be taken
+# for the same nodule when binding the labels. 3 mm is LNDb's own rule for
+# deciding that two annotations describe one lesion.
+LABEL_MATCH_RADIUS_MM = 3.0
 
 _NOT_READ = object()    # sentinel: "this radiologist's mask is not loaded yet"
 
@@ -177,6 +208,69 @@ def merge_masks(per_radiologist: list[np.ndarray]) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
+# Labels: the malignancy the exploration notebook reduced each nodule to
+# ---------------------------------------------------------------------------
+# See the LABELS section of the module docstring for why the notebook's file
+# cannot be joined on (scan_id, finding_id) and is matched by position instead.
+
+def cancer_label(malignancy) -> object:
+    """The LIDC convention: True above 3, False below 3, 'Ambiguous' at 3.
+
+    ``None`` for a finding no notebook row matched, which is how a manifest
+    records an unlabelled nodule.
+    """
+    if malignancy is None or pd.isna(malignancy):
+        return None
+    if malignancy > 3:
+        return True
+    if malignancy < 3:
+        return False
+    return "Ambiguous"
+
+
+def match_labels(image: sitk.Image, group, labelled, radius_mm: float) -> dict[int, float]:
+    """``FindingID`` -> ``malignancy`` for the findings of one CT.
+
+    ``group`` are this CT's findings, ``labelled`` the notebook rows for the
+    same CT (columns x, y, z in voxel indices and malignancy). Every notebook
+    centre is turned into world mm with the CT's own transform and matched to
+    the finding centroids; a match counts only when it is within ``radius_mm``
+    and no other finding is equally close.
+
+    Ambiguity is dropped rather than guessed: when two notebook rows land on
+    the same finding there is nothing to prefer between them, and when one
+    notebook row has two candidates in range the caller cannot tell which
+    finding it describes. Both leave the nodule unlabelled.
+    """
+    if labelled.empty:
+        return {}
+
+    centres = np.array([image.TransformContinuousIndexToPhysicalPoint((float(x), float(y), float(z)))
+                        for x, y, z in labelled[["x", "y", "z"]].to_numpy()])
+    findings = group[["x", "y", "z"]].to_numpy(dtype=float)
+    distance = np.linalg.norm(centres[:, None, :] - findings[None, :, :], axis=2)
+
+    matched: dict[int, float] = {}
+    ambiguous: set[int] = set()
+    usable = (distance.min(axis=1) <= radius_mm) & ((distance <= radius_mm).sum(axis=1) == 1)
+    for row in np.flatnonzero(usable):
+        finding_id = int(group["FindingID"].iloc[int(distance[row].argmin())])
+        if finding_id in matched:
+            ambiguous.add(finding_id)  # two notebook rows, one finding
+            continue
+        matched[finding_id] = labelled["malignancy"].iloc[row]
+    for finding_id in ambiguous:
+        matched.pop(finding_id)
+    return matched
+
+
+def label_columns(matched: dict[int, float], finding_id: int) -> dict:
+    """The two label columns of one manifest row."""
+    malignancy = matched.get(int(finding_id), np.nan)
+    return {"malignancy": malignancy, "is_cancer": cancer_label(malignancy)}
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def nodule_id(ct_id: int, finding_id: int) -> str:
@@ -209,7 +303,33 @@ def parse_args(argv=None) -> argparse.Namespace:
                         help="drop masks smaller than this volume (see MIN_MASK_MM3); "
                              "lower it to keep small nodules, at the risk of "
                              "PyRadiomics failing on them")
+    parser.add_argument("--labels-csv", default=DEFAULT_LABELS,
+                        help="per-nodule characteristics from the exploration notebook; "
+                             "supplies malignancy and is_cancer, matched to findings by "
+                             "position (see the LABELS section). Empty string disables; "
+                             "ignored for --split test, which has no ratings")
+    parser.add_argument("--label-radius", type=float, default=LABEL_MATCH_RADIUS_MM,
+                        help="how far a notebook centre may sit from a finding centroid "
+                             "and still count as the same nodule")
     return parser.parse_args(argv)
+
+
+def load_labels(path: str):
+    """Read the notebook's per-nodule characteristics, or None to skip them.
+
+    Only used for ``--split train``: the competition test candidates have no
+    radiologists and therefore no rating.
+    """
+    if not path:
+        return None
+    if not Path(path).exists():
+        print(f"[warn] {path} not found, the manifest gets no malignancy")
+        return None
+    labels = pd.read_csv(path)
+    required = {"scan_id", "finding_id", "x", "y", "z", "malignancy"}
+    if missing := sorted(required - set(labels.columns)):
+        raise SystemExit(f"{path} has no column(s) {missing}")
+    return labels
 
 
 def main(argv=None) -> None:
@@ -218,6 +338,11 @@ def main(argv=None) -> None:
     for column in ("LNDbID", "FindingID", "x", "y", "z"):
         if column not in findings.columns:
             raise SystemExit(f"{args.findings_csv} has no column '{column}'")
+
+    labels = None if args.split == "test" else load_labels(args.labels_csv)
+    if labels is not None:
+        print(f"labels: {args.labels_csv} ({len(labels)} nodule rows, matched to "
+              f"findings within {args.label_radius} mm)")
 
     out_dir = Path(args.out_dir) / args.split
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -246,6 +371,11 @@ def main(argv=None) -> None:
             continue
 
         image = sitk.ReadImage(str(ct_path))
+        # Malignancy of this CT's findings, matched by position (needs the CT
+        # for the transform, so findings of a missing CT stay unlabelled).
+        matched = ({} if labels is None
+                   else match_labels(image, group, labels[labels["scan_id"] == ct_id],
+                                     args.label_radius))
         # Radiologist masks of this CT, read at most once each and reused by
         # every finding cut from it (they are full-size volumes).
         mask_cache: dict[int, sitk.Image | None] = {}
@@ -254,7 +384,7 @@ def main(argv=None) -> None:
             this_nodule = nodule_id(ct_id, row.FindingID)
             record = {"nodule_id": this_nodule, "LNDbID": int(ct_id),
                       "FindingID": int(row.FindingID), "x": row.x, "y": row.y, "z": row.z,
-                      "status": "ok", "error": ""}
+                      "status": "ok", "error": ""} | label_columns(matched, row.FindingID)
 
             # Keep columns that exist in the findings file (train has Nodule,
             # Volume, ...; the test file has only the coordinates).
@@ -357,7 +487,8 @@ def main(argv=None) -> None:
             ignore_index=True)
     # Stable column order; QC columns first, PyRadiomics needs none of these.
     preferred = ["nodule_id", "LNDbID", "FindingID", "x", "y", "z", "nodule", "volume",
-                 "text", "status", "error", "radiologists", "mask_voxels", "mask_mm3"]
+                 "text", "malignancy", "is_cancer", "status", "error", "radiologists",
+                 "mask_voxels", "mask_mm3"]
     columns = [c for c in preferred if c in manifest.columns]
     columns += [c for c in manifest.columns if c not in columns]
     manifest = manifest[columns].sort_values("nodule_id").reset_index(drop=True)
@@ -367,6 +498,11 @@ def main(argv=None) -> None:
     print(f"manifest: {manifest_path}")
     print(f"status counts: {manifest['status'].value_counts().to_dict()}")
     print(f"cubes written to {out_dir}: {ok} ok")
+    if "malignancy" in manifest.columns:
+        rated = manifest["malignancy"].notna()
+        print(f"nodules with a malignancy rating: {int(rated.sum())}/{len(manifest)}")
+        if rated.any():
+            print(f"  is_cancer: {manifest.loc[rated, 'is_cancer'].value_counts().to_dict()}")
     if "radiologists" in manifest.columns:
         merged = manifest["radiologists"].fillna(1).astype(int)
         print(f"nodules annotated by >1 radiologist: {int((merged > 1).sum())}")

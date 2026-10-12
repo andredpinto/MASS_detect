@@ -32,6 +32,11 @@ $ uv run python -m src.mass_detect.scripts.prepare_lndb_nodules --findings-csv d
 
 Writes <out-dir>/<split>/LNDb-XXXX_noduleY.mhd + _mask.mhd + lndb_manifest.csv.
 (--out-dir keeps the LNDb cubes apart from the LIDC ones; the default is data/nodules.)
+For the train split the manifest also carries malignancy and is_cancer, read from
+notebooks/lndb_processed.csv and bound to each finding by position (within 3 mm),
+not by id: that file's finding_id is the radiologist's own number, not the nodule id
+of trainNodules_gt.csv, so joining on it would rate the wrong nodule. Use
+--labels-csv "" to skip and --label-radius to widen the match.
 The test split needs the test CTs (extract testdata*.rar into the CT dir) and, as
 written, the mask step expects the RadID/RadFindingID columns that only the train
 CSV has. Add --limit N to try a few CTs first.
