@@ -39,7 +39,7 @@ Not in version control — generated locally, safe to delete and rebuild.
 | Path | Written by |
 |---|---|
 | `data/nodules/<patient>_noduleNNN.mhd` + `_mask.mhd` | `lidc_preprocessing.py` |
-| `data/nodules/meta_info_lidc.csv` | `lidc_preprocessing.py` (end of run) or lidc_labels.py (run manually if script doesn't end)|
+| `data/nodules/meta_info_lidc.csv` | `lidc_preprocessing.py` (end of run) or `lidc_labels.py` (run manually if script doesn't end)|
 | `data/nodules/lidc_labels.csv` | `lidc_labels.py` |
 | `data/nodules/train/`, `data/nodules/test/` — `LNDb-XXXX_noduleNNN.mhd` + `_mask.mhd` + `lndb_manifest.csv` | `prepare_lndb_nodules.py` |
 | `data/radiomics_features.csv` | `extract_features_pyrad.py` |
