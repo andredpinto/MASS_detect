@@ -1,93 +1,133 @@
 # MASS_detect
 
+Lung nodule malignancy prediction from CT, using radiomics features extracted
+with PyRadiomics. Trains on [LIDC-IDRI](https://wiki.cancerimagingarchive.net/display/Public/LIDC-IDRI)
+and [LNDb](https://lndb.ush.pt/) and predicts a 1–5 malignancy rating for every
+LNDb test candidate.
 
+## Data layout
 
-## Getting started
+Everything lives under `data/`, which is **not** in version control. Paths are
+relative to the repository root — run every command from there. Scripts read
+these locations from constants at the top of each file, so nothing is
+configurable via environment variables.
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+### You must supply
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+| Path | What it is | Source |
+|---|---|---|
+| `data/LNDb/` | LNDb CTs, `LNDb-XXXX.mhd` + `.raw` | `data0.rar` … `data5.rar` (236 training CTs) |
+| `data/LNDb/masks/` | Per-radiologist segmentations, `LNDb-XXXX_radN.mhd` + `.raw` | same archives |
+| `data/LIDC/lidc_idri/` | LIDC-IDRI DICOMs, one folder per patient | LIDC-IDRI / TCIA |
+| `data/trainNodules_gt.csv` | Training findings with radiologist annotations | `data/trainset_csv.zip` |
+| `data/testNodules.csv` | Competition test candidates (centroids only) | `data/trainset_csv.zip` |
 
-## Add your files
+Supporting CSVs from the same archive — `trainNodules.csv`, `trainCTs.csv`,
+`trainFleischner.csv`, `trainFolds.csv` — are used by the notebooks for
+exploration and label checks.
 
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
+Optional: `data/LNDb/chars_trainNodules.csv` gives per-radiologist malignancy
+ratings for **all** five radiologists. Without it, notebook 01 falls back to
+`notebooks/lndb_processed.csv`, which only covers radiologists 1–3 and leaves
+563 LNDb nodules unlabelled. Adding it is the single biggest improvement
+available to the labelled training set.
+
+### Produced by the pipeline
+
+Not in version control — generated locally, safe to delete and rebuild.
+
+| Path | Written by |
+|---|---|
+| `data/nodules/<patient>_noduleNNN.mhd` + `_mask.mhd` | `lidc_preprocessing.py` |
+| `data/nodules/meta_info_lidc.csv` | `lidc_preprocessing.py` (end of run) or lidc_labels.py (run manually if script doesn't end)|
+| `data/nodules/lidc_labels.csv` | `lidc_labels.py` |
+| `data/nodules/train/`, `data/nodules/test/` — `LNDb-XXXX_noduleNNN.mhd` + `_mask.mhd` + `lndb_manifest.csv` | `prepare_lndb_nodules.py` |
+| `data/radiomics_features.csv` | `extract_features_pyrad.py` |
+| `data/radiomics_features_processed.csv`, `radiomics_kept_features.csv`, `radiomics_processing_report.csv` | notebook 01 |
+| `data/cv_metrics.csv`, `oof_predictions.csv`, `test_predictions.csv` | notebook 02 |
+
+## Setup
+
+```bash
+uv sync                      # main environment (Python 3.10)
+```
+
+The LIDC scripts need a **separate** environment: pylidc (2018) breaks against
+the `numpy>=2.2` the main environment requires.
+
+```bash
+uv venv .venv-lidc --python 3.10
+uv pip install --python .venv-lidc/bin/python \
+    "numpy==1.23.5" "pylidc==0.2.3" "setuptools<82" SimpleITK pandas jupyter
+```
+
+Run LIDC steps with `.venv-lidc/bin/python`, everything else with `uv run`.
+
+## Pipeline
+
+`info/extraction_pipeline.txt` has the full annotated version; this is the
+order and the commands.
+
+```bash
+# 1. LIDC — nodule volumes + consensus masks  [.venv-lidc]
+.venv-lidc/bin/python -m src.mass_detect.scripts.lidc_preprocessing
+
+# 2. LNDb — cubes + masks
+uv run python -m src.mass_detect.scripts.prepare_lndb_nodules \
+    --findings-csv data/trainNodules_gt.csv --split train
+uv run python -m src.mass_detect.scripts.prepare_lndb_nodules \
+    --findings-csv data/testNodules.csv --split test
+
+# 3. features
+uv run python -m src.mass_detect.scripts.extract_features_pyrad \
+    --input data/nodules --dataset LIDC --split train \
+    --input data/nodules/train --dataset LNDb --split train \
+    --input data/nodules/test  --dataset LNDb --split test \
+    --params Params.yml --output data/radiomics_features.csv --jobs 12
+
+# 4. clean + filter features, then train
+uv run jupyter notebook notebooks/01_radiomics_features_analysis.ipynb
+uv run jupyter notebook notebooks/02_train_model_and_predict.ipynb
+```
+
+Steps 1–3 are resumable: existing outputs are skipped, `--force` re-extracts.
+
+## Structure
 
 ```
-cd existing_repo
-git remote add origin https://gitlab.up.pt/lab_iacd_tp3/mass_detect.git
-git branch -M main
-git push -uf origin main
+src/mass_detect/
+  scripts/
+    lidc_preprocessing.py        LIDC-IDRI -> volumes + consensus masks
+    lidc_labels.py               LIDC malignancy labels
+    prepare_lndb_nodules.py      LNDb -> cubes + radiologist-consensus masks
+    extract_features_pyrad.py    volumes + masks -> PyRadiomics feature table
+    join_lndb_characteristics.py joins lndb_processed.csv onto the features
+    resampling.py                resampling helper (currently unused; PyRadiomics
+                                 does the resampling, per Params.yml)
+  lndb_utils/                    utilities shipped with the LNDb dataset
+
+notebooks/
+  00_check_cubes.ipynb           cube geometry / mask QC
+  01_radiomics_features_analysis.ipynb   clean, filter, attach labels
+  02_train_model_and_predict.ipynb      validation + final model
+  explorar_lndb.ipynb            LNDb data exploration
+  lndb_processed.csv             per-nodule LNDb characteristics (tracked)
+
+Params.yml                       PyRadiomics settings (bin width, resampling, features)
+info/                            notes, pipeline description, dataset guides
 ```
 
-## Integrate with your tools
+### Nodule identifiers
 
-* [Set up project integrations](https://gitlab.up.pt/lab_iacd_tp3/mass_detect/-/settings/integrations)
+One scheme everywhere: `<dataset>-<image>_nodule<n>`, zero-padded to three
+digits — `LNDb-0001_nodule001`, `LIDC-IDRI-0343_nodule005`. It is derived from
+the `.mhd` filename, so it propagates automatically from the preprocessing
+scripts through feature extraction into every CSV. The notebooks join on it;
+changing it in one place means re-running the pipeline.
 
-## Collaborate with your team
+## Notes
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
-
-## Test and Deploy
-
-Use the built-in continuous integration in GitLab.
-
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
-
-***
-
-# Editing this README
-
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
-
-## Suggestions for a good README
-
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
-
-## Name
-Choose a self-explaining name for your project.
-
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
-
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
-
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
-
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
-
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
-
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
-
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
-
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
-
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
-
-## License
-For open source projects, say how it is licensed.
-
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+- The test split needs its CTs extracted separately; as written, its mask step
+  expects `RadID`/`RadFindingID` columns that only the training CSV has.
+- Only LNDb nodules are ever *validated*, since the competition test set is
+  LNDb. LIDC, when enabled, is training-only.
