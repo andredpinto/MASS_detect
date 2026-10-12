@@ -79,8 +79,11 @@ class MakeDataSet:
 
             for nodule_idx, nodule in enumerate(nodules_annotation):
                 # Build 3D file paths
-                image_name = "{}_nodule{}.mhd".format(pid, nodule_idx)
-                mask_name = "{}_nodule{}_mask.mhd".format(pid, nodule_idx)
+                # Same id scheme as the LNDb script: <dataset>-<image>_nodule<n>.
+                # The nodule index is zero-padded so ids sort and compare
+                # consistently across both datasets.
+                image_name = "{}_nodule{:03d}.mhd".format(pid, nodule_idx)
+                mask_name = "{}_nodule{:03d}_mask.mhd".format(pid, nodule_idx)
                 image_path = os.path.join(self.output_dir, image_name)
                 mask_path = os.path.join(self.output_dir, mask_name)
                 # Check if both files already exist

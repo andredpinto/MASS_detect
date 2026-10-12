@@ -9,12 +9,12 @@ one row per nodule to a CSV file.
 
 The input directories are produced by *preprocessing* scripts, not by this one:
 
-* ``data/processed``        -> LIDC-IDRI nodule volumes + consensus masks,
+* ``data/nodules``          -> LIDC-IDRI nodule volumes + consensus masks,
                                produced by ``scripts/lidc_preprocessing.py``
                                (needs the ``.venv-lidc`` environment; see
                                AGENTS.md). Run it on the whole dataset before
                                expecting every LIDC nodule to be here.
-* ``data/lndb_nodules``     -> LNDb 64 mm cubes around every finding + masks,
+* ``data/nodules/<split>``  -> LNDb 64 mm cubes around every finding + masks,
                                produced by ``scripts/prepare_lndb_nodules.py``
                                (automatic segmentation from the nodule centre,
                                the same procedure for training and test rows).
@@ -47,9 +47,9 @@ stopping the whole run. Failed rows are retried on the next run (only rows with
 USAGE (from the repository root)
 --------------------------------
     uv run python -m src.mass_detect.scripts.extract_features_pyrad \
-        --input data/processed --dataset LIDC --split train \
-        --input data/lndb_nodules/train --dataset LNDb --split train \
-        --input data/lndb_nodules/test --dataset LNDb --split test \
+        --input data/nodules --dataset LIDC --split train \
+        --input data/nodules/train --dataset LNDb --split train \
+        --input data/nodules/test --dataset LNDb --split test \
         --params Params.yml \
         --output data/radiomics_features.csv \
         --jobs 12
@@ -60,7 +60,8 @@ caps (e.g. ``MASS_OUTPUT_CSV``), which is handy for scheduled runs.
 OUTPUT SCHEMA
 -------------
 nodule_id   unique id of the nodule (the image file name without extension,
-            e.g. ``LIDC-IDRI-0001_nodule0`` or ``LNDb-0001_f001``)
+            ``<dataset>-<image>_nodule<n>``, e.g. ``LIDC-IDRI-0001_nodule000``
+            or ``LNDb-0001_nodule001``)
 dataset     free label given by --dataset (e.g. LIDC / LNDb)
 split       free label given by --split (e.g. train / test)
 image_path, mask_path
