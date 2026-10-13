@@ -1,6 +1,24 @@
 from src.mass_detect.lndb_utils import utils
 from pathlib import Path
 import numpy as np
+import pandas as pd
+import matplotlib as plt
+
+BLUE, ORANGE, GREY, OLIVE = "blue", "orange", "grey", "olive"
+plt.rcParams.update({
+    "axes.spines.top": False,
+    "axes.spines.right": False,
+    "axes.edgecolor": GREY,
+    "axes.grid": True,
+    "axes.grid.axis": "y",
+    "axes.axisbelow": True,
+    "grid.color": "w",
+    "grid.linewidth": 0.8,
+    "axes.titlesize": 12,
+    "axes.titleweight": "normal",
+    "figure.dpi": 110,
+})
+
 
 def find_file(name, base_folder="../data"):
     results = list(Path(base_folder).rglob(name))
