@@ -11,7 +11,7 @@ DATA_DIR = Path(os.environ.get("MASS_DATA_DIR", REPO_ROOT / "data")) #where our 
 LNDB_DIR = DATA_DIR / "LNDb"           # LNDb dataset location
 PATCHES_DIR = DATA_DIR / "patches"     # Patches location
 LIDC_DIR = DATA_DIR / "TCIA_LIDC-IDRI_20200921"
-NODULE_TABLE = REPO_ROOT / "notebooks" / "nodule_table.csv"
+NODULE_TABLE = REPO_ROOT / "csv_files" / "nodule_table.csv"
 FEATURES_FILE = PATCHES_DIR / "features.csv"
 MASK_FILE = LNDB_DIR / "LNDb_masks" / "masks" / "LNDb-{ct:04d}_rad{rad}.mhd"
 QC_FIGURE_FILE = REPO_ROOT / "reports" / "figures" / "patch_qc.png"
@@ -26,5 +26,5 @@ ROI_RADIOMICS_FILE = PATCHES_DIR / "radiomics_rois.csv"     # PyRadiomics featur
 ROI_ICC_FILE = PATCHES_DIR / "radiomics_rois_icc.csv"       # robustness of every feature between two readers
 
 # Intermediate tables written by notebooks 01 and 02 and read by notebook 03
-LNDB_NODULES_FILE = REPO_ROOT / "notebooks" / "lndb_nodules.csv"
-LIDC_NODULES_FILE = REPO_ROOT / "notebooks" / "lidc_nodules.csv"
+LNDB_NODULES_FILE = REPO_ROOT / "csv_files" / "lndb_nodules.csv"
+LIDC_NODULES_FILE = REPO_ROOT / "csv_files" / "lidc_nodules.csv"
