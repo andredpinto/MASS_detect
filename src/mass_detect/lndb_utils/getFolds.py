@@ -1,7 +1,7 @@
 import numpy as np
 import random
 import csv
-from src.lndb_utils.utils import readCsv, writeCsv
+from src.mass_detect.lndb_utils.utils import readCsv, writeCsv
 
 def getFold(fold = 0, fname_in = 'trainFolds.csv',
             fnames = ['CTs.csv','Fleischner.csv','Nodules.csv'],

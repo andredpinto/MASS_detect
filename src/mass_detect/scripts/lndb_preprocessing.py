@@ -28,7 +28,7 @@ PyRadiomics only ever sees ROIs it can measure. See ``merge_masks`` and
 LABELS
 ------
 ``notebooks/lndb_processed.csv`` is the per-nodule table written by
-``notebooks/explorar_lndb.ipynb``: one row per LNDb nodule, with the
+``notebooks/lndb_exploration.ipynb``: one row per LNDb nodule, with the
 characteristics the radiologists agreed on, among them ``malignancy``. Two of
 its columns make it unusable as an input to this script:
 
@@ -149,7 +149,6 @@ def cut_cube(scan: sitk.Image, xyz
 
     return scancube
 
-
 # ---------------------------------------------------------------------------
 # Masks: which voxels belong to the nodule we are cutting
 # ---------------------------------------------------------------------------
@@ -171,8 +170,7 @@ def radiologist_pairs(row) -> list[tuple[int, int]]:
     Returns an empty list when the findings file has no radiologist columns,
     which is the case for the competition test candidates.
     """
-    if not (hasattr(row, "RadID") and hasattr(row, "RadFindingID")):
-        return []
+    if not (hasattr(row, "RadID") and hasattr(row, "RadFindingID")): return []
     radii = [int(v) for v in str(row.RadID).split(",")]
     finding_ids = [int(v) for v in str(row.RadFindingID).split(",")]
     return list(zip(radii, finding_ids))
@@ -205,7 +203,6 @@ def merge_masks(per_radiologist: list[np.ndarray]) -> np.ndarray:
     """
     votes = np.sum(per_radiologist, axis=0)
     return (votes * 2 >= len(per_radiologist)).astype(np.uint8)
-
 
 # ---------------------------------------------------------------------------
 # Labels: the malignancy the exploration notebook reduced each nodule to
