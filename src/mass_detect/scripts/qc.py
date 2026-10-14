@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import random
-from .config import CENTRE_INDEX, LNDB_DIR, MASK_FILE, PATCHES_DIR, QC_FIGURE_FILE
+from .config import CENTRE_INDEX, CUBE_MM, LNDB_DIR, MASK_FILE, PATCH_SIZE, PATCHES_DIR, QC_FIGURE_FILE, SPACING_MM
 from .patches import extract_patch, find_ct_files
 
 PLACEHOLDER_VOLUME = 4 * np.pi * 1.5 ** 3 / 3        # centroid only findings: no mask
@@ -42,7 +42,7 @@ def check_patch_coordinates():
                 if len(inside) == 0:
                     rows.append({"group": group, "ct": ct, "tilt": tilt[ct], "distance_mm": np.nan, "voxels": 0})
                     continue
-                distance = np.linalg.norm(inside.mean(axis=0) - CENTRE_INDEX)
+                distance = np.linalg.norm(inside.mean(axis=0) - CENTRE_INDEX) * SPACING_MM   # in mm
                 rows.append({"group": group, "ct": ct, "tilt": tilt[ct], "distance_mm": distance, "voxels": len(inside)})
 
     result = pd.DataFrame(rows)
@@ -52,7 +52,7 @@ def check_patch_coordinates():
     valid = result.dropna(subset=["distance_mm"])
     quantiles = valid.groupby("group")["distance_mm"].quantile([0.5, 0.9, 1.0]).unstack().round(2)
     quantiles.columns = ["median", "90th percentile", "max"]
-    print("\ndistance between the mask centroid and voxel 32 (mm):")
+    print("\ndistance between the mask centroid and the centre voxel (mm):")
     print(quantiles.to_string())
     for limit in (1, 2, 5):
         print(f"share below {limit} mm: {(valid['distance_mm'] < limit).mean():.1%}")
@@ -83,13 +83,27 @@ def draw_patch(axes, row):
 
 def make_patch_qc_figure():
     rng = np.random.default_rng(0)
-    rows = [row for split in ("train", "test") for row in pick(split, rng).itertuples()]
+    rows = [row for split in ("train", "lidc") for row in pick(split, rng).itertuples()]   # six LNDb and six LIDC IDRI patches
     fig, axes = plt.subplots(len(rows) // 2, 6, figsize=(12, 2.1 * len(rows) // 2))
     for number, row in enumerate(rows):
         line, start = divmod(number, 2)
         draw_patch(axes[line, start * 3:start * 3 + 3], row)
-    fig.suptitle("Random patches (64 mm cube), centre marked in red, lung window for display only", fontsize=10)
+    fig.suptitle(f"Random patches ({CUBE_MM:.0f} mm cube), centre marked in red, lung window for display only", fontsize=10)
     plt.tight_layout()
     QC_FIGURE_FILE.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(QC_FIGURE_FILE, dpi=110)
     print(f"saved {QC_FIGURE_FILE}")
+
+def check_patch_files(manifest): # The checklist of a correct CT patch, applied to every patch of a manifest; one row per patch, True when it passes
+    rows = []
+    for row in manifest[manifest["status"] == "ok"].itertuples():
+        patch = np.load(PATCHES_DIR / row.file, mmap_mode="r")
+        sample = np.asarray(patch[::4, ::4, ::4])                    # enough voxels to judge the content, and fast
+        rows.append({"patch_id": row.patch_id,
+                     "stored as int16": patch.dtype == np.int16,
+                     "shape of the configured cube": patch.shape == (PATCH_SIZE,) * 3,
+                     "looks like a CT, not a mask": len(np.unique(sample)) > 50 and float(sample.std()) > 50,
+                     "contains lung air (HU of -700 or less)": int(patch.min()) <= -700,
+                     "contains tissue (HU of 0 or more)": int(patch.max()) >= 0,
+                     "mostly inside the scan": row.outside_fraction < 0.5})
+    return pd.DataFrame(rows)

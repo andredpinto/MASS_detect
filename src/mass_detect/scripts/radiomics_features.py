@@ -5,7 +5,7 @@ import SimpleITK as sitk
 import logging
 import numpy as np
 import pandas as pd
-from .config import LNDB_DIR, NODULE_TABLE, PATCHES_DIR
+from .config import LNDB_DIR, NODULE_TABLE, PATCHES_DIR, SPACING_MM
 from .features import HU_RANGE, segment_from_centre
 from .patches import extract_patch
 
@@ -27,8 +27,10 @@ def extract(patch, mask): # Radiomic features of one region. Returns an empty di
     global _EXTRACTOR
     _EXTRACTOR = _EXTRACTOR or make_extractor() # one extractor per worker process
     if mask.sum() < SETTINGS["minimumROISize"]: return {}
-    image = sitk.GetImageFromArray(np.clip(patch.astype(np.float32), *HU_RANGE))   # spacing 1 mm by construction
+    image = sitk.GetImageFromArray(np.clip(patch.astype(np.float32), *HU_RANGE))
     region = sitk.GetImageFromArray(mask.astype(np.uint8))
+    image.SetSpacing([SPACING_MM] * 3)     # the real voxel size, so that shape features and LoG sigmas are in mm
+    region.SetSpacing([SPACING_MM] * 3)
     values = _EXTRACTOR.execute(image, region)
     return {name: float(value) for name, value in values.items() if not name.startswith("diagnostics")}
 

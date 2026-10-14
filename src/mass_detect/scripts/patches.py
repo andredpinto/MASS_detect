@@ -1,4 +1,4 @@
-"""Cutting 64 mm patches (1 mm voxels) around a finding: LNDb and LIDC-IDRI."""
+"""Cutting 64 mm patches (voxels of SPACING_MM, see config.py) around a finding: LNDb and LIDC IDRI."""
 import SimpleITK as sitk
 import numpy as np
 import pandas as pd
@@ -23,7 +23,7 @@ def centre_is_inside(image, centre_mm): # Gives True when the physical point fal
     size = np.array(image.GetSize())
     return bool(np.all(index >= -0.5) and np.all(index <= size - 0.5))
 
-def extract_patch(image, centre_mm, interpolator=sitk.sitkLinear, outside_value=AIR_HU): # Cuts 64mm cube around a world point
+def extract_patch(image, centre_mm, interpolator=sitk.sitkLinear, outside_value=AIR_HU): # Cuts the 64 mm cube around a world point
     #SimpleITK looks up each voxel in the CT using origin, spacing and direction of the CT, so a tilted CT is handled correctly.
     origin = np.asarray(centre_mm, dtype=float) - CENTRE_INDEX * SPACING_MM
     resampler = sitk.ResampleImageFilter()

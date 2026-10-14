@@ -1,14 +1,14 @@
 """Regions drawn by the radiologists, their PyRadiomics features and how robust those features are between readers.
 
 For every nodule of the cohort we keep one mask per reading and the consensus mask, cut on the same 64 mm grid
-as the CT patch (1 mm voxels, centre on voxel 32), so that a mask and its patch overlap voxel by voxel.
+as the CT patch (voxels of SPACING_MM, centre on CENTRE_INDEX), so that a mask and its patch overlap voxel by voxel.
 """
 from multiprocessing import Pool
 import SimpleITK as sitk
 import numpy as np
 import pandas as pd
 import time
-from .config import (CENTRE_INDEX, LIDC_MANIFEST_FILE, LNDB_DIR, LNDB_MANIFEST_FILE, MASK_FILE, PATCHES_DIR,
+from .config import (CENTRE_INDEX, PATCH_SIZE, SPACING_MM, LIDC_MANIFEST_FILE, LNDB_DIR, LNDB_MANIFEST_FILE, MASK_FILE, PATCHES_DIR,
                      READINGS_FILE, ROI_DIR, ROI_ICC_FILE, ROI_RADIOMICS_FILE)
 from .lidc import import_pylidc
 from .patches import extract_patch, read_series
@@ -131,9 +131,11 @@ def roi_quality(cohort): # Checks per nodule: readers, consensus size and how fa
         rois = np.load(ROI_DIR / f"{patch_id}.npz")
         consensus = rois["consensus"]
         reader_voxels = rois["masks"].sum(axis=(1, 2, 3))
-        offset = np.linalg.norm(np.argwhere(consensus).mean(axis=0) - CENTRE_INDEX) if consensus.any() else np.nan
+        offset = np.linalg.norm(np.argwhere(consensus).mean(axis=0) - CENTRE_INDEX) * SPACING_MM if consensus.any() else np.nan   # in mm
         rows.append({"patch_id": patch_id, "readers": len(rois["readers"]), "consensus_voxels": int(consensus.sum()),
-                     "empty_reader_masks": int((reader_voxels == 0).sum()), "centre_offset_mm": offset})
+                     "empty_reader_masks": int((reader_voxels == 0).sum()), "centre_offset_mm": offset,
+                     "binary": rois["masks"].dtype == bool and consensus.dtype == bool,                 # masks hold only 0 and 1
+                     "shape_ok": rois["masks"].shape[1:] == consensus.shape == (PATCH_SIZE,) * 3})    # same grid as the CT patch
     return cohort[["patch_id", "dataset"]].merge(pd.DataFrame(rows), on="patch_id")
 
 # PyRadiomics on every region

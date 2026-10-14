@@ -1,7 +1,7 @@
 """Unit tests (run with: pytest tests)."""
 import SimpleITK as sitk
 import numpy as np
-from src.mass_detect.scripts.config import AIR_HU, CENTRE_INDEX, PATCH_SIZE
+from src.mass_detect.scripts.config import AIR_HU, CENTRE_INDEX, PATCH_SIZE, SPACING_MM
 from src.mass_detect.scripts.patches import extract_patch
 
 BACKGROUND_HU = -1000
@@ -39,7 +39,7 @@ def make_ct(blob_mm, spacing=(0.7, 0.7, 2.5), size=(200, 200, 80), direction=Non
 def peak_index(patch): # Voxel (z, y, x) of the brightest voxel.
     return np.array(np.unravel_index(np.argmax(patch), patch.shape))
 
-def test_blob_at_the_centre_lands_on_voxel_32_with_anisotropic_spacing():
+def test_blob_at_the_centre_lands_on_the_centre_voxel_with_anisotropic_spacing():
     blob = np.array([20.3, 100.7, 200.2])
     image = make_ct(blob, spacing=(0.7, 0.7, 2.5), volume_centre_mm=blob + [3, -4, 6])
     patch, outside = extract_patch(image, blob)
@@ -47,11 +47,11 @@ def test_blob_at_the_centre_lands_on_voxel_32_with_anisotropic_spacing():
     assert np.all(np.abs(peak_index(patch) - CENTRE_INDEX) <= 1)
     assert outside == 0.0
 
-def test_axis_order_is_z_y_x(): # A blob displaced by (+5, -3, +7) mm in (x, y, z) must appear at index (32+7, 32-3, 32+5).
+def test_axis_order_is_z_y_x(): # A blob displaced by (+5, -3, +7) mm in (x, y, z) must appear (+7, -3, +5) mm away from the centre voxel in (z, y, x).
     centre = np.array([20.0, 100.0, 200.0])
     image = make_ct(centre + [5, -3, 7], spacing=(0.7, 0.7, 2.5), volume_centre_mm=centre)
     patch, _ = extract_patch(image, centre)
-    expected = np.array([CENTRE_INDEX + 7, CENTRE_INDEX - 3, CENTRE_INDEX + 5])
+    expected = CENTRE_INDEX + np.array([7, -3, 5]) / SPACING_MM
     assert np.all(np.abs(peak_index(patch) - expected) <= 1), peak_index(patch)
 
 def test_tilted_direction_is_handled(): # CTs with gantry tilt have a direction that is not the identity. The patch must still be aligned with the world.
@@ -61,7 +61,7 @@ def test_tilted_direction_is_handled(): # CTs with gantry tilt have a direction 
         image = make_ct(centre + offset, spacing=(0.65, 0.65, 1.0), size=(220, 220, 200),
                         direction=tilt, volume_centre_mm=centre)
         patch, outside = extract_patch(image, centre)
-        expected = np.array([CENTRE_INDEX + offset[2], CENTRE_INDEX + offset[1], CENTRE_INDEX + offset[0]])
+        expected = CENTRE_INDEX + offset[::-1] / SPACING_MM
         assert np.all(np.abs(peak_index(patch) - expected) <= 1), (peak_index(patch), expected)
         assert outside == 0.0
 

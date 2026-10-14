@@ -1,6 +1,6 @@
 """How the geometry of the patch affects the radiologists' regions and their features: cube size and voxel size.
 
-Cube size: how far the radiologists' regions reach from the centre, read from the 64 mm ROI files.
+Cube size: how far the radiologists' regions reach from the centre, read from the ROI files of notebook 05.
 Voxel size: the CT and the radiologists' masks are cut again from the original scans at several voxel sizes, keeping
 the cube at 64 mm and every PyRadiomics setting unchanged, and the sizes are compared on four criteria:
 coverage, robustness between readers, dependence on the acquisition and prediction.
@@ -16,7 +16,7 @@ from sklearn.metrics import cohen_kappa_score, make_scorer
 from sklearn.model_selection import GridSearchCV, StratifiedGroupKFold
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
-from .config import AIR_HU, CENTRE_INDEX, MASK_FILE, PATCHES_DIR, ROI_DIR
+from .config import AIR_HU, CENTRE_INDEX, CUBE_MM, MASK_FILE, PATCH_SIZE, ROI_DIR, SENSITIVITY_DIR, SPACING_MM
 from .features import HU_RANGE
 from .lidc import import_pylidc
 from .models import CorrelationFilter, OrdinalLogisticRegression
@@ -24,10 +24,10 @@ from .patches import find_ct_files, read_series
 from .radiomics_features import SETTINGS, icc_2_1, make_extractor
 from .rois import CONSENSUS_LEVEL, patch_centres
 
-CUBE_MM = 64.0                         # physical side of the cube, the same at every voxel size
 SPACINGS_MM = [0.6, 1.0, 1.5, 2.0]     # voxel sizes compared (1 mm is the one used everywhere else)
 LOG_MARGIN_MM = 9.0                    # 3 sigma of the widest LoG filter (sigma 3 mm): context the filter needs around the region
-SPACING_DIR = PATCHES_DIR / "voxel_size"   # one csv per scan, so that a long run can be stopped and resumed
+SPACING_DIR = SENSITIVITY_DIR / "extraction"   # one csv per scan, so that a long run can be stopped and resumed
+RESULTS_DIR = SENSITIVITY_DIR / "results"       # the four result tables, read by notebook 05
 ICC_SAMPLE_LIDC = 400                  # LIDC nodules with two readers used for the ICC (every LNDb one is used)
 
 # Cube size
@@ -40,8 +40,8 @@ def cube_extents(cohort): # Distance in mm from the patch centre to the farthest
         if len(voxels) == 0:
             rows.append({"patch_id": patch_id})
             continue
-        half_extent = np.abs(voxels - CENTRE_INDEX).max() + 0.5      # from the centre to the outer edge of the last voxel
-        touches = bool(voxels.min() == 0 or voxels.max() == 2 * CENTRE_INDEX - 1)
+        half_extent = (np.abs(voxels - CENTRE_INDEX).max() + 0.5) * SPACING_MM   # mm from the centre to the outer edge of the last voxel
+        touches = bool(voxels.min() == 0 or voxels.max() == PATCH_SIZE - 1)
         rows.append({"patch_id": patch_id, "half_extent_mm": half_extent, "touches_border": touches})
     return cohort[["patch_id", "dataset", "diameter_mm"]].merge(pd.DataFrame(rows), on="patch_id")
 
