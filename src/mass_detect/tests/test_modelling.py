@@ -3,7 +3,13 @@ import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import StratifiedGroupKFold
-from src.mass_detect.scripts.modelling import FrankHallOrdinal, PooledModel, decode, mean_qwk, nested_cv
+import json
+
+from sklearn.metrics import cohen_kappa_score
+
+from src.mass_detect.scripts.modelling import (GRIDS, SAMPLED, FrankHallOrdinal, PooledModel, dataset_probabilities, decode,
+                                                edge_share, grid_points, inner_splits, mean_qwk, nested_cv,
+                                                one_standard_error, quadratic_kappa)
 
 def synthetic_table(n=400, seed=0): # Two datasets, patients with several nodules, a rating driven by two features
     rng = np.random.default_rng(seed)
@@ -43,7 +49,8 @@ def test_combat_leaves_lidc_untouched():
 def test_every_strategy_predicts_every_rating():
     frame = synthetic_table()
     for strategy in ("pooled", "indicator", "combat", "per_dataset"):
-        proba = PooledModel("ordinal", {"alpha": 1.0}, strategy, ["f1", "f2", "f3"]).fit(frame, frame["rating"]).predict_proba(frame)
+        params = {"LNDb": {"alpha": 1.0}, "LIDC": {"alpha": 1.0}} if strategy == "per_dataset" else {"alpha": 1.0}
+        proba = PooledModel("ordinal", params, strategy, ["f1", "f2", "f3"]).fit(frame, frame["rating"]).predict_proba(frame)
         assert proba.shape == (len(frame), 5) and np.allclose(proba.sum(axis=1), 1), strategy
 
 def test_nested_cv_never_splits_a_patient_and_predicts_every_nodule():
@@ -54,3 +61,44 @@ def test_nested_cv_never_splits_a_patient_and_predicts_every_nodule():
     result = nested_cv("ordinal", "pooled", frame, ["f1", "f2", "f3"], seeds=(0,), processes=2)
     assert result["decoded"].shape == (1, len(frame)) and set(np.unique(result["decoded"])) <= set(range(1, 6))
     assert mean_qwk(frame["rating"].to_numpy(), result["decoded"][0], frame["dataset"].to_numpy()) > 0.3
+
+
+def test_one_standard_error_rule_prefers_the_simplest_candidate_within_the_noise():
+    table = pd.DataFrame({"params": ["complex", "simple", "simplest"], "rule": "argmax",
+                          "score": [0.60, 0.59, 0.55], "se": [0.02, 0.02, 0.02], "complexity": [5, 1, 0]})
+    assert one_standard_error(table)["params"] == "simple"      # 0.59 is within 0.02 of 0.60, 0.55 is not
+
+
+def test_per_dataset_pairs_match_the_pooled_model():
+    # In the inner loop each dataset model is trained once per candidate and the pairs are averaged afterwards;
+    # this must give exactly the probabilities of a PooledModel trained with that pair of hyperparameters
+    frame = synthetic_table()
+    features, classes = ["f1", "f2", "f3"], np.arange(1, 6)
+    train, test = inner_splits(frame, "rating", seed=0, inner_folds=3, inner_repeats=1)[0]
+    own = dataset_probabilities("ordinal", features, frame.iloc[train], frame.iloc[test], "rating", None, classes)
+    candidates = grid_points("ordinal")
+    pair = (np.mean([own["LIDC"][candidates.index({"alpha": 3.0})], own["LNDb"][candidates.index({"alpha": 300.0})]], axis=0))
+    params = {"LIDC": {"alpha": 3.0}, "LNDb": {"alpha": 300.0}}
+    model = PooledModel("ordinal", params, "per_dataset", features).fit(frame.iloc[train], frame["rating"].iloc[train])
+    assert np.allclose(pair, model.predict_proba(frame.iloc[test]))
+
+
+def test_fast_kappa_equals_sklearn():
+    rng = np.random.default_rng(0)
+    for _ in range(50):
+        y, prediction = rng.integers(1, 6, 80), rng.integers(1, 6, 80)
+        prediction[prediction == 4] = 3          # a rating that is never predicted, as happens with rare classes
+        assert np.isclose(quadratic_kappa(y, prediction), cohen_kappa_score(y, prediction, weights="quadratic"))
+
+
+def test_random_search_draws_the_same_candidates_from_the_grid():
+    for name, size in SAMPLED.items():
+        first, second = grid_points(name), grid_points(name)
+        assert first == second and len(first) == size
+        assert all(value in GRIDS[name][key] for params in first for key, value in params.items())
+
+
+def test_edge_share_flags_values_at_the_ends_of_the_grid():
+    choices = pd.DataFrame({"params": [json.dumps({"alpha": 3000.0}), json.dumps({"alpha": 10.0}),
+                                       json.dumps({"alpha": 0.1}), json.dumps({"alpha": 10.0})]})
+    assert edge_share("ordinal", choices)["alpha"] == 0.5     # 3000 and 0.1 are the two ends of the grid

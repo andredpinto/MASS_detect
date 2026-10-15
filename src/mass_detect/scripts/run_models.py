@@ -21,7 +21,7 @@ import numpy as np
 import pandas as pd
 
 from .config import MODEL_FEATURES_FILE, MODEL_RESULTS_DIR, READING_FEATURES_FILE
-from .modelling import RULES, nested_cv, paired_difference, permutation_importance_cv, summary
+from .modelling import EDGE_LIMIT, RULES, edge_share, nested_cv, paired_difference, permutation_importance_cv, summary
 
 SEEDS = (0, 1, 2)
 CONFIRMATION_SEEDS = (10, 11, 12)
@@ -46,18 +46,26 @@ def run_config(key, frame, features, results_dir, processes, **options):
     """Runs one configuration with nested_cv and saves it, or loads it from disk when it was already done."""
     path = results_dir / f"{key}.npz"
     choices_path = results_dir / f"{key}_choices.csv"
+    inner_path = results_dir / f"{key}_inner_scores.csv"
 
     if path.exists():
         saved = np.load(path, allow_pickle=True)
         return {"proba": saved["proba"], "decoded": saved["decoded"], "classes": saved["classes"],
-                "choices": pd.read_csv(choices_path), "frame": frame}
+                "choices": pd.read_csv(choices_path), "frame": frame, "name": options["name"]}
 
     started = time.time()
     result = nested_cv(frame=frame, features=features, processes=processes, **options)
     np.savez(path, proba=result["proba"], decoded=result["decoded"], classes=result["classes"])
     result["choices"].to_csv(choices_path, index=False)
+    result["inner_scores"].to_csv(inner_path, index=False)
     print(f"{key}: {time.time() - started:.0f} s", flush=True)
+
+    # The grid check: a value chosen at an end of the grid in too many outer folds means the grid is too narrow
+    edges = edge_share(options["name"], result["choices"])
+    if (edges > EDGE_LIMIT).any():
+        print(f"  WARNING {key}: chosen at an end of the grid in {edges.round(2).to_dict()}, widen the grid", flush=True)
     result["frame"] = frame
+    result["name"] = options["name"]
     return result
 
 
@@ -71,6 +79,8 @@ def describe(key, stage, result, label="rating", reference=None):
     table, primary = summary(y, result["decoded"], dataset, patients)
     row = {"config": key, "stage": stage, "mean_qwk": primary["mean_qwk"], "low": primary["low"], "high": primary["high"],
            "rules_chosen": result["choices"]["rule"].value_counts().to_dict()}
+    edges = edge_share(result["name"], result["choices"])
+    row["share_at_grid_edge"] = float(edges.max()) if len(edges) else np.nan   # the grid check, see modelling.edge_share
     for d in table.index:
         for metric in table.columns:
             row[f"{metric}_{d}"] = table.loc[d, metric]
@@ -92,7 +102,7 @@ def choose(rows, keys):
     return best
 
 
-def run(processes=10, model_file=MODEL_FEATURES_FILE, reading_file=READING_FEATURES_FILE, results_dir=MODEL_RESULTS_DIR,
+def run(processes=15, model_file=MODEL_FEATURES_FILE, reading_file=READING_FEATURES_FILE, results_dir=MODEL_RESULTS_DIR,
         models=("ordinal", "random_forest", "gradient_boosting", "svm")):
     results_dir.mkdir(parents=True, exist_ok=True)
     nodules, readings, features = load_tables(model_file, reading_file)
@@ -155,19 +165,22 @@ def run(processes=10, model_file=MODEL_FEATURES_FILE, reading_file=READING_FEATU
         final.update(training=readings, weight="weight")
     final_result = stage3[chosen["label"]]
 
+    # The file names of stages 4 and 5 carry the chosen configuration, so a new winner is computed again
+    tag = f"{chosen['model']}_{chosen['strategy']}_{chosen['label']}"
+
     # Stage 4: the 1 to 3 scale, by grouping the 1 to 5 predictions (1-2, 3, 4-5) or by training on it directly
     collapsed = dict(final_result)
     collapsed["decoded"] = np.digitize(final_result["decoded"], [2.5, 3.5]) + 1
     rows["scale3_collapsed"] = describe("scale3_collapsed", "4 scale 1 to 3", collapsed, label="rating_3")
     if chosen["label"] == "A":
-        direct = run_config("scale3_direct", nodules, features, label="rating_3", seeds=SEEDS, **best, **common)
+        direct = run_config(f"scale3_direct_{tag}", nodules, features, label="rating_3", seeds=SEEDS, **best, **common)
         rows["scale3_direct"] = describe("scale3_direct", "4 scale 1 to 3", direct, label="rating_3", reference=collapsed)
 
     # Stage 5: the chosen configuration on new seeds, then permutation importance
-    confirmation = run_config("confirmation", nodules, features, seeds=CONFIRMATION_SEEDS, **final, **common)
+    confirmation = run_config(f"confirmation_{tag}", nodules, features, seeds=CONFIRMATION_SEEDS, **final, **common)
     rows["confirmation"] = describe("confirmation", "5 confirmation", confirmation)
 
-    importance_file = results_dir / "permutation_importance.csv"
+    importance_file = results_dir / f"permutation_importance_{tag}.csv"
     if not importance_file.exists():
         importance = permutation_importance_cv(final["name"], final["strategy"], nodules, features,
                                                final_result["choices"], training=final.get("training"),
@@ -183,7 +196,8 @@ def run(processes=10, model_file=MODEL_FEATURES_FILE, reading_file=READING_FEATU
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--processes", type=int, default=10)
+    # 15 processes: one per outer fold (5 folds x 3 seeds), so every configuration runs in a single round
+    parser.add_argument("--processes", type=int, default=15)
     parser.add_argument("--skip-svm", action="store_true", help="leave the slowest model out")
     args = parser.parse_args()
 

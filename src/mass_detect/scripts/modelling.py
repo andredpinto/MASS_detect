@@ -3,8 +3,10 @@
 Every model gives a probability for each rating from 1 to 5, and a decision rule turns those probabilities into one
 rating. The nested cross validation is grouped by patient: the outer folds measure the performance, and the inner folds
 only choose the hyperparameters and the decision rule, so the outer folds never take part in any choice
-(Cawley and Talbot, 2010).
+(Cawley and Talbot, 2010). The inner folds are repeated with two seeds, and the choice follows the one standard error
+rule (Hastie et al., 2009, section 7.10): the simplest candidate whose score is within one standard error of the best.
 """
+import json
 from itertools import product
 from multiprocessing import Pool
 
@@ -14,7 +16,7 @@ from sklearn.base import BaseEstimator, ClassifierMixin, clone
 from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import balanced_accuracy_score, cohen_kappa_score, f1_score, mean_absolute_error
-from sklearn.model_selection import StratifiedGroupKFold
+from sklearn.model_selection import ParameterSampler, StratifiedGroupKFold
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
@@ -81,34 +83,74 @@ class FrankHallOrdinal(BaseEstimator, ClassifierMixin):
         return decode(self.predict_proba(X), self.classes_, "argmax")
 
 
-# The models and their hyperparameter grids
+# The models and their hyperparameter grids.
+# Every list goes from the simplest value to the most complex one (the strongest regularisation first), so the position
+# of a value in its list measures how complex the model is. The one standard error rule of the inner loop relies on it.
+# Penalties, learning rates and kernel widths are spaced on a logarithmic scale, because their effect depends on their
+# order of magnitude.
+#   ordinal            the penalty alpha, over five orders of magnitude so that the chosen value falls inside the grid
+#   random_forest      the hyperparameters that matter most for a forest (Probst, Wright and Boulesteix, 2019):
+#                      the share of features tried at each split, the size of the leaves, the depth, and an optional
+#                      reweighting of the rare ratings. The number of trees is not tuned, because more trees never hurt
+#                      (Probst and Boulesteix, 2018): SEARCH_TREES while searching, FINAL_TREES in the final model
+#   gradient_boosting  learning rate, size of the trees, size of the leaves and L2 penalty; the number of boosting
+#                      rounds is set by early stopping on a part of the training data
+#   svm                C and the width gamma of the RBF kernel together, because they interact (Hsu, Chang and Lin)
 
 GRIDS = {
-    "ordinal": {"alpha": [0.1, 1.0, 10.0, 100.0]},
-    "random_forest": {"min_samples_leaf": [5, 20], "max_features": ["sqrt", 0.3]},
-    "gradient_boosting": {"learning_rate": [0.05, 0.1], "max_leaf_nodes": [15, 31]},
-    "svm": {"C": [0.5, 2.0]},
+    "ordinal": {"alpha": [3000.0, 1000.0, 300.0, 100.0, 30.0, 10.0, 3.0, 1.0, 0.3, 0.1]},
+    "random_forest": {
+        "max_features": [0.02, 0.035, 0.05, 0.1, 0.2, 0.3, 0.45, 0.6],
+        "min_samples_leaf": [40, 20, 10, 5, 3, 1],
+        "max_depth": [8, 16, None],
+        "class_weight": [None, "balanced_subsample"],
+    },
+    "gradient_boosting": {
+        "learning_rate": [0.01, 0.02, 0.035, 0.05, 0.08, 0.12, 0.2],
+        "max_leaf_nodes": [3, 7, 15, 31, 63],
+        "min_samples_leaf": [100, 50, 20, 10],
+        "l2_regularization": [30.0, 10.0, 3.0, 1.0, 0.3, 0.1],
+    },
+    "svm": {
+        "C": [2.0 ** -5, 2.0 ** -3, 2.0 ** -1, 2.0, 2.0 ** 3, 2.0 ** 5, 2.0 ** 7],
+        "gamma": [2.0 ** -13, 2.0 ** -11, 2.0 ** -9, 2.0 ** -7, 2.0 ** -5, 2.0 ** -3, 2.0 ** -1, 2.0],
+    },
 }
+SAMPLED = {"random_forest": 15, "gradient_boosting": 20}   # random search: candidates drawn from these grids
+SEARCH_TREES = 150     # trees of a forest while the inner loop compares candidates
+FINAL_TREES = 500      # trees of the forest refitted with the chosen hyperparameters
+INNER_FOLDS = 3        # folds of the inner loop
+INNER_REPEATS = 2      # the inner folds are drawn twice, with two seeds, to make the choice less noisy
+EDGE_LIMIT = 0.2       # a grid must be widened when more than this share of the outer folds choose one of its ends
 
 
-def make_model(name, params):
-    """A new, unfitted model: median imputation, scaling and the classifier."""
+def make_model(name, params, final=True):
+    """A new, unfitted model: median imputation, scaling and the classifier.
+
+    'final' is False inside the inner loop, where a forest uses fewer trees to compare candidates faster.
+    """
     imputer = SimpleImputer(strategy="median")
     scaler = StandardScaler()
 
     if name == "ordinal":
         classifier = OrdinalLogisticRegression(alpha=params["alpha"])
     elif name == "random_forest":
-        forest = RandomForestClassifier(n_estimators=300, min_samples_leaf=params["min_samples_leaf"],
-                                        max_features=params["max_features"], n_jobs=1, random_state=0)
+        forest = RandomForestClassifier(n_estimators=FINAL_TREES if final else SEARCH_TREES,
+                                        max_features=params["max_features"], min_samples_leaf=params["min_samples_leaf"],
+                                        max_depth=params["max_depth"], class_weight=params["class_weight"],
+                                        n_jobs=1, random_state=0)
         classifier = FrankHallOrdinal(forest)
     elif name == "gradient_boosting":
+        # up to 1000 rounds, stopped when the loss on 20% of the training nodules has not improved for 10 rounds
         boosting = HistGradientBoostingClassifier(learning_rate=params["learning_rate"],
                                                   max_leaf_nodes=params["max_leaf_nodes"],
-                                                  max_iter=200, l2_regularization=1.0, random_state=0)
+                                                  min_samples_leaf=params["min_samples_leaf"],
+                                                  l2_regularization=params["l2_regularization"],
+                                                  max_iter=1000, early_stopping=True, validation_fraction=0.2,
+                                                  n_iter_no_change=10, random_state=0)
         classifier = FrankHallOrdinal(boosting)
     elif name == "svm":
-        svm = SVC(C=params["C"], gamma="scale", probability=True, random_state=0)
+        svm = SVC(C=params["C"], gamma=params["gamma"], probability=True, random_state=0)
         classifier = FrankHallOrdinal(svm)
     else:
         raise ValueError(name)
@@ -117,9 +159,50 @@ def make_model(name, params):
 
 
 def grid_points(name):
-    """Every combination of the grid of one model, as a list of dictionaries."""
+    """The candidates of one model: every point of its grid, or a random sample of them for the models in SAMPLED.
+
+    A random sample of the grid finds good values faster than walking the whole grid, because only a few
+    hyperparameters matter much (Bergstra and Bengio, 2012). It is drawn once, with a fixed seed, so every outer fold
+    compares the same candidates.
+    """
     grid = GRIDS[name]
+    if name in SAMPLED:
+        return list(ParameterSampler(grid, SAMPLED[name], random_state=0))
     return [dict(zip(grid, values)) for values in product(*grid.values())]
+
+
+def _values(params):
+    """(name shown in the tables, hyperparameter, value) for every value; one set per dataset with per_dataset models."""
+    if all(isinstance(value, dict) for value in params.values()):
+        return [(f"{key}_{dataset}", key, value) for dataset, own in params.items() for key, value in own.items()]
+    return [(key, key, value) for key, value in params.items()]
+
+
+def flat(params):
+    """The hyperparameters as a one level dictionary, for example {"alpha_LNDb": 100.0, "alpha_LIDC": 3.0}."""
+    return {shown: value for shown, _, value in _values(params)}
+
+
+def complexity(name, params):
+    """Sum of the positions of the values in their grids: 0 is the simplest point, larger is more complex."""
+    return sum(GRIDS[name][key].index(value) for _, key, value in _values(params))
+
+
+def edge_share(name, choices):
+    """Share of the outer folds whose chosen value is the first or the last of its grid, for numeric grids of 3 values
+    or more (a grid with None or text, such as the depth of a tree or the class weights, has no "beyond").
+
+    A value chosen at an end of the grid means that the best value may lie beyond it, so the grid has to be widened
+    whenever this share is above EDGE_LIMIT.
+    """
+    at_edge = {}
+    for text in choices["params"]:
+        for shown, key, value in _values(json.loads(text)):
+            grid = GRIDS[name][key]
+            numeric = all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in grid)
+            if len(grid) >= 3 and numeric:
+                at_edge.setdefault(shown, []).append(value in (grid[0], grid[-1]))
+    return pd.Series({shown: float(np.mean(flags)) for shown, flags in at_edge.items()}, dtype=float)
 
 
 # Ways of pooling the two datasets
@@ -131,13 +214,18 @@ class PooledModel(BaseEstimator, ClassifierMixin):
     indicator    one more column that says whether the nodule comes from LIDC IDRI
     combat       the LNDb features moved onto the scale of LIDC IDRI (reference batch), log diameter as covariate
     per_dataset  one model per dataset, and the average of their probabilities
+
+    'params' holds the hyperparameters of the model. With per_dataset it holds one set per dataset, for example
+    {"LNDb": {"alpha": 100.0}, "LIDC": {"alpha": 3.0}}: the two datasets differ in size and in label noise, so each
+    model gets its own amount of regularisation.
     """
 
-    def __init__(self, name="ordinal", params=None, strategy="pooled", features=()):
+    def __init__(self, name="ordinal", params=None, strategy="pooled", features=(), final=True):
         self.name = name
         self.params = params
         self.strategy = strategy
         self.features = features
+        self.final = final      # False inside the inner loop (see make_model)
 
     def _matrix(self, frame):
         # the feature table the model sees, after the indicator column or ComBat
@@ -169,9 +257,9 @@ class PooledModel(BaseEstimator, ClassifierMixin):
                 rows = (frame["dataset"] == dataset).to_numpy()
                 X = frame.loc[rows, list(self.features)]
                 rows_weight = None if weight is None else weight[rows]
-                self.models_[dataset] = _fit_pipeline(make_model(self.name, self.params), X, y[rows], rows_weight)
+                self.models_[dataset] = _fit_pipeline(make_model(self.name, self.params[dataset], self.final), X, y[rows], rows_weight)
         else:
-            self.model_ = _fit_pipeline(make_model(self.name, self.params), self._matrix(frame), y, weight)
+            self.model_ = _fit_pipeline(make_model(self.name, self.params, self.final), self._matrix(frame), y, weight)
         return self
 
     def predict_proba(self, frame):
@@ -210,12 +298,27 @@ def metrics(y, prediction):
     }
 
 
+def quadratic_kappa(y, prediction):
+    """Quadratic weighted kappa, the same value as cohen_kappa_score(weights="quadratic") of sklearn.
+
+    It is computed directly from the confusion matrix, because the inner loop scores thousands of candidates and the
+    checks of the sklearn function would dominate the time.
+    """
+    labels = np.union1d(y, prediction)
+    k = len(labels)
+    observed = np.bincount(np.searchsorted(labels, y) * k + np.searchsorted(labels, prediction),
+                           minlength=k * k).reshape(k, k).astype(float)
+    expected = np.outer(observed.sum(axis=1), observed.sum(axis=0)) / observed.sum()
+    weights = (np.arange(k)[:, None] - np.arange(k)[None, :]) ** 2
+    return 1 - (weights * observed).sum() / (weights * expected).sum()
+
+
 def mean_qwk(y, prediction, dataset):
     """The primary metric: the QWK in each dataset, averaged over the datasets present."""
     scores = []
     for d in np.unique(dataset):
         rows = dataset == d
-        scores.append(cohen_kappa_score(y[rows], prediction[rows], weights="quadratic"))
+        scores.append(quadratic_kappa(y[rows], prediction[rows]))
     return float(np.mean(scores))
 
 
@@ -228,55 +331,129 @@ def _train_label(training, label):
     return label
 
 
-def _fit(name, params, strategy, features, train, label, weight):
+def _fit(name, params, strategy, features, train, label, weight, final=True):
     """Fits one PooledModel on the rows of 'train'."""
-    model = PooledModel(name, params, strategy, features)
+    model = PooledModel(name, params, strategy, features, final)
     sample_weight = None if weight is None else train[weight]
     return model.fit(train, train[label], sample_weight)
 
 
+def inner_splits(inner_frame, label, seed, inner_folds=INNER_FOLDS, inner_repeats=INNER_REPEATS):
+    """The folds of the inner loop: grouped by patient, stratified by dataset and rating, drawn once per repeat."""
+    strata = inner_frame["dataset"] + "_" + inner_frame[label].astype(str)
+    splits = []
+    for repeat in range(inner_repeats):
+        splitter = StratifiedGroupKFold(inner_folds, shuffle=True, random_state=seed + 1000 * repeat)
+        splits += list(splitter.split(inner_frame, strata, inner_frame["patient_id"]))
+    return splits
+
+
+def dataset_probabilities(name, features, fit_rows, held_out, train_label, weight, classes):
+    """For every dataset, the probabilities that its own model gives to the held out nodules, one per candidate."""
+    own = {}
+    for dataset in sorted(fit_rows["dataset"].unique()):
+        rows = fit_rows[fit_rows["dataset"] == dataset]
+        rows_weight = None if weight is None else rows[weight]
+        own[dataset] = []
+        for params in grid_points(name):
+            model = make_model(name, params, final=False)
+            model = _fit_pipeline(model, rows[list(features)], rows[train_label], rows_weight)
+            own[dataset].append(_full(model, model.predict_proba(held_out[list(features)]), classes))
+    return own
+
+
+def inner_scores(name, strategy, features, inner_frame, training, train_label, weight, splits, classes, label, rules):
+    """Mean QWK of every (candidate, decision rule) on every inner split: one row per candidate, rule and split.
+
+    A candidate is one set of hyperparameters, written as JSON. With per_dataset each dataset model has its own
+    hyperparameters. The two models are trained independently of each other, so each one is trained once per
+    candidate, and every pair (one for LNDb, one for LIDC IDRI) is scored by averaging their probabilities, as
+    PooledModel does. The pairs are scored one at a time and never stored, which keeps the memory low.
+    """
+    candidates = grid_points(name)
+    y = inner_frame[label].to_numpy()
+    dataset = inner_frame["dataset"].to_numpy()
+    rows = []
+    for split, (inner_train, inner_test) in enumerate(splits):
+        fit_rows = training[training["patient_id"].isin(inner_frame["patient_id"].iloc[inner_train])]
+        held_out = inner_frame.iloc[inner_test]
+        y_test, dataset_test = y[inner_test], dataset[inner_test]
+        masks = [dataset_test == d for d in np.unique(dataset_test)]      # one per dataset, computed once per split
+
+        def score(proba, rule):
+            # mean_qwk of one candidate and rule, with the dataset masks of this split already computed
+            prediction = decode(proba, classes, rule)
+            return float(np.mean([quadratic_kappa(y_test[m], prediction[m]) for m in masks]))
+
+        if strategy == "per_dataset":
+            own = dataset_probabilities(name, features, fit_rows, held_out, train_label, weight, classes)
+            datasets = list(own)
+            for pair in product(range(len(candidates)), repeat=len(datasets)):
+                key = json.dumps({d: candidates[i] for d, i in zip(datasets, pair)})
+                proba = np.mean([own[d][i] for d, i in zip(datasets, pair)], axis=0)
+                for rule in rules:
+                    rows.append((key, rule, split, score(proba, rule)))
+        else:
+            for params in candidates:
+                model = _fit(name, params, strategy, features, fit_rows, train_label, weight, final=False)
+                proba = model.predict_proba(held_out)
+                for rule in rules:
+                    rows.append((json.dumps(params), rule, split, score(proba, rule)))
+    return pd.DataFrame(rows, columns=["params", "rule", "split", "score"])
+
+
+def summarise_candidates(name, scores):
+    """Mean score over the inner splits, its standard error and the complexity of every (candidate, rule)."""
+    table = scores.groupby(["params", "rule"])["score"].agg(["mean", "std", "count"]).reset_index()
+    table = table.rename(columns={"mean": "score"})
+    table["se"] = table["std"] / np.sqrt(table["count"])
+    table["complexity"] = [complexity(name, json.loads(key)) for key in table["params"]]
+    return table[["params", "rule", "score", "se", "complexity"]]
+
+
+def one_standard_error(table):
+    """The one standard error rule (Hastie et al., 2009, section 7.10) on a table of candidates.
+
+    'table' has one row per (candidate, decision rule) with its mean score, the standard error of that mean and the
+    complexity of the candidate. Every candidate whose score is at least the best score minus its standard error is
+    as good as the best within the noise of the inner folds; among them the simplest wins, and among equally simple
+    ones the highest score.
+    """
+    best = table.loc[table["score"].idxmax()]
+    good_enough = table[table["score"] >= best["score"] - best["se"]]
+    return good_enough.sort_values(["complexity", "score"], ascending=[True, False]).iloc[0]
+
+
 def _outer_job(job):
-    """One outer fold: the inner folds choose the hyperparameters and the rule, then the model is refitted and predicts."""
-    name, strategy, features, frame, training, label, weight, train_patients, test_rows, seed, rules, inner_folds = job
+    """One outer fold: the inner loop chooses the hyperparameters and the rule, then the model is refitted and predicts."""
+    name, strategy, features, frame, training, label, weight, train_patients, test_rows, seed, rules = job
     classes = np.sort(frame[label].unique())
     train_label = _train_label(training, label)
-    grid = grid_points(name)
 
-    # Inner loop: out of fold probabilities of every grid point on the training part of this outer fold
-    inner_frame = frame[frame["patient_id"].isin(train_patients)]
-    strata = inner_frame["dataset"] + "_" + inner_frame[label].astype(str)
-    splitter = StratifiedGroupKFold(inner_folds, shuffle=True, random_state=seed)
-    probas = {i: np.zeros((len(inner_frame), len(classes))) for i in range(len(grid))}
-    for inner_train, inner_test in splitter.split(inner_frame, strata, inner_frame["patient_id"]):
-        inner_patients = inner_frame["patient_id"].iloc[inner_train]
-        fit_rows = training[training["patient_id"].isin(inner_patients)]
-        for i, params in enumerate(grid):
-            model = _fit(name, params, strategy, features, fit_rows, train_label, weight)
-            probas[i][inner_test] = model.predict_proba(inner_frame.iloc[inner_test])
+    # Inner loop, on the training part of this outer fold only: 3 folds grouped by patient, drawn with 2 seeds
+    inner_frame = frame[frame["patient_id"].isin(train_patients)].reset_index(drop=True)
+    splits = inner_splits(inner_frame, label, seed)
+    scores = inner_scores(name, strategy, features, inner_frame, training, train_label, weight, splits, classes, label,
+                          rules)
+    table = summarise_candidates(name, scores)
+    chosen = one_standard_error(table)
+    params = json.loads(chosen["params"])
 
-    # Score every pair (grid point, decision rule) and keep the best one
-    y_inner = inner_frame[label].to_numpy()
-    dataset_inner = inner_frame["dataset"].to_numpy()
-    scores = {}
-    for (i, proba), rule in product(probas.items(), rules):
-        scores[(i, rule)] = mean_qwk(y_inner, decode(proba, classes, rule), dataset_inner)
-    best, rule = max(scores, key=scores.get)
-    params = grid[best]
-
-    # Refit on the whole training part and predict the held out fold
+    # Refit on the whole training part with the chosen hyperparameters and predict the held out fold
     fit_rows = training[training["patient_id"].isin(train_patients)]
     model = _fit(name, params, strategy, features, fit_rows, train_label, weight)
     proba = model.predict_proba(frame.iloc[test_rows])
-    return seed, test_rows, proba, params, rule, best
+    return seed, test_rows, proba, params, chosen["rule"], table
 
 
-def nested_cv(name, strategy, frame, features, label="rating", seeds=(0, 1, 2), folds=5, inner_folds=3, rules=RULES,
+def nested_cv(name, strategy, frame, features, label="rating", seeds=(0, 1, 2), folds=5, rules=RULES,
               training=None, weight=None, processes=10):
     """Nested cross validation grouped by patient, with the outer folds stratified by dataset and rating.
 
     'frame' holds the nodules that are evaluated. 'training' is the table the models learn from: the same nodules by
     default, or the readings. Returns the out of fold probabilities (seeds x nodules x ratings), the rating decoded with
-    the rule chosen for each outer fold, and the hyperparameters and rule chosen in each outer fold.
+    the rule chosen for each outer fold, the hyperparameters and rule chosen in each outer fold, and the inner scores
+    of every candidate in every outer fold (to draw the validation curves).
     """
     frame = frame.reset_index(drop=True)
     if training is None:
@@ -285,26 +462,29 @@ def nested_cv(name, strategy, frame, features, label="rating", seeds=(0, 1, 2), 
     strata = frame["dataset"] + "_" + frame[label].astype(str)
 
     # One job per outer fold and seed, run in parallel
-    jobs = []
+    jobs, fold_of = [], []
     for seed in seeds:
         splitter = StratifiedGroupKFold(folds, shuffle=True, random_state=seed)
-        for train, test in splitter.split(frame, strata, frame["patient_id"]):
+        for fold, (train, test) in enumerate(splitter.split(frame, strata, frame["patient_id"])):
             train_patients = frame["patient_id"].iloc[train].unique()
-            jobs.append((name, strategy, features, frame, training, label, weight, train_patients, test, seed, rules,
-                         inner_folds))
+            jobs.append((name, strategy, features, frame, training, label, weight, train_patients, test, seed, rules))
+            fold_of.append(fold)
     with Pool(min(processes, len(jobs))) as pool:
         results = pool.map(_outer_job, jobs)
 
     # Put every fold back in place
     proba = np.zeros((len(seeds), len(frame), len(classes)))
     decoded = np.zeros((len(seeds), len(frame)), dtype=int)
-    choices = []
-    for seed, test, fold_proba, params, rule, grid_index in results:
+    choices, inner_scores = [], []
+    for fold, (seed, test, fold_proba, params, rule, table) in zip(fold_of, results):
         s = list(seeds).index(seed)
         proba[s, test] = fold_proba
         decoded[s, test] = decode(fold_proba, classes, rule)
-        choices.append({"seed": seed, "fold_size": len(test), "rule": rule, "grid_index": grid_index, **params})
-    return {"proba": proba, "decoded": decoded, "choices": pd.DataFrame(choices), "classes": classes}
+        choices.append({"seed": seed, "outer_fold": fold, "fold_size": len(test), "rule": rule,
+                        "params": json.dumps(params), **flat(params)})
+        inner_scores.append(table.assign(seed=seed, outer_fold=fold))
+    return {"proba": proba, "decoded": decoded, "choices": pd.DataFrame(choices),
+            "inner_scores": pd.concat(inner_scores, ignore_index=True), "classes": classes}
 
 
 # Bootstrap over patients
@@ -363,14 +543,14 @@ def permutation_importance_cv(name, strategy, frame, features, choices, label="r
         training = frame
     classes = np.sort(frame[label].unique())
     strata = frame["dataset"] + "_" + frame[label].astype(str)
-    fold_choices = choices[choices["seed"] == seed].reset_index(drop=True)
+    fold_choices = choices[choices["seed"] == seed].sort_values("outer_fold").reset_index(drop=True)
     splitter = StratifiedGroupKFold(folds, shuffle=True, random_state=seed)
     folds_and_choices = zip(splitter.split(frame, strata, frame["patient_id"]), fold_choices.itertuples(index=False))
     rng = np.random.default_rng(seed)
     drops = {feature: [] for feature in features}
 
     for (train, test), choice in folds_and_choices:
-        params = grid_points(name)[int(choice.grid_index)]
+        params = json.loads(choice.params)
         fit_rows = training[training["patient_id"].isin(frame["patient_id"].iloc[train])]
         model = _fit(name, params, strategy, features, fit_rows, _train_label(training, label), weight)
 
