@@ -77,7 +77,12 @@ def build_lidc_table():
         if not default_groups:
             continue
 
-        header = read_first_slice_header(scan)
+        try:
+            header = read_first_slice_header(scan)
+        except OSError:
+            print(f"Missing scan {scan}")
+            continue
+
         origin_xy = np.array(header.ImagePositionPatient[:2], dtype=float)
         slices_are_axis_aligned = np.allclose(header.ImageOrientationPatient, [1, 0, 0, 0, 1, 0])
         kernel = getattr(header, "ConvolutionKernel", None)
@@ -165,5 +170,7 @@ def save_lidc_reader_ratings():
             for annotation in group:
                 rows.append({"patient_id": scan.patient_id, "nodule": f"{scan.series_instance_uid}_{number}",
                              "malignancy": int(annotation.malignancy)})
+
+    READER_RATINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(rows).to_csv(READER_RATINGS_FILE, index=False)
     print(f"{len(rows)} ratings saved to {READER_RATINGS_FILE}")
