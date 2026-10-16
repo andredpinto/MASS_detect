@@ -1,7 +1,8 @@
 """From the PyRadiomics features of the radiologists' regions to the tables the models read (notebook 05).
 
 The filters never look at the malignancy rating, so they can be applied to every nodule before the cross validation.
-Every choice that uses the rating is made later, inside the training folds of notebook 06.
+Every choice that uses the rating is made only inside the training folds of notebook 06 (the penalties of the
+models, and the elastic net, which sets the coefficients of unhelpful features to zero).
 """
 import numpy as np
 import pandas as pd

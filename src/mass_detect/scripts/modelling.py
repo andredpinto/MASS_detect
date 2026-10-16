@@ -5,8 +5,13 @@ rating. The nested cross validation is grouped by patient: the outer folds measu
 only choose the hyperparameters and the decision rule, so the outer folds never take part in any choice
 (Cawley and Talbot, 2010). The inner folds are repeated with two seeds, and the choice follows the one standard error
 rule (Hastie et al., 2009, section 7.10): the simplest candidate whose score is within one standard error of the best.
+
+Besides the four models of stage 2, three extensions of the chosen model are compared in stage 5: the ordinal model with
+the rare ratings weighted up (ordinal_balanced), an elastic net logistic regression that selects features inside the
+folds (elastic_net), and a weighted average of the ordinal model and the random forest (ordinal_rf).
 """
 import json
+import warnings
 from itertools import product
 from multiprocessing import Pool
 
@@ -14,7 +19,9 @@ import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, ClassifierMixin, clone
 from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
+from sklearn.exceptions import ConvergenceWarning
 from sklearn.impute import SimpleImputer
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import balanced_accuracy_score, cohen_kappa_score, f1_score, mean_absolute_error
 from sklearn.model_selection import ParameterSampler, StratifiedGroupKFold
 from sklearn.pipeline import make_pipeline
@@ -24,6 +31,7 @@ from sklearn.svm import SVC
 from .models import OrdinalLogisticRegression, ReferenceBatchComBat
 
 RULES = ("argmax", "median", "mean")
+warnings.filterwarnings("ignore", category=ConvergenceWarning)   # saga may stop at max_iter on the weakest penalties
 
 
 # Decision rules
@@ -83,6 +91,58 @@ class FrankHallOrdinal(BaseEstimator, ClassifierMixin):
         return decode(self.predict_proba(X), self.classes_, "argmax")
 
 
+class ClassWeighted(BaseEstimator, ClassifierMixin):
+    """Fits a model with every nodule weighted by (1 / share of its rating) ** power, so rare ratings count more.
+
+    power 0 keeps the weights as they are, power 1 gives every rating the same total weight, and 0.5 is half way.
+    The weights are scaled to a mean of 1, so the penalty of the model keeps its meaning.
+    """
+
+    def __init__(self, estimator=None, power=0.0):
+        self.estimator = estimator
+        self.power = power
+
+    def fit(self, X, y, sample_weight=None):
+        y = np.asarray(y)
+        ratings, counts = np.unique(y, return_counts=True)
+        share = dict(zip(ratings, counts / len(y)))
+        weight = np.array([share[rating] for rating in y]) ** -self.power
+        weight = weight / weight.mean()
+        if sample_weight is not None:
+            weight = weight * np.asarray(sample_weight, dtype=float)
+        self.model_ = clone(self.estimator).fit(X, y, sample_weight=weight)
+        self.classes_ = self.model_.classes_
+        return self
+
+    def predict_proba(self, X):
+        return self.model_.predict_proba(X)
+
+
+class WeightedEnsemble(BaseEstimator, ClassifierMixin):
+    """Weighted average of the probabilities of several models, each a full pipeline of make_model.
+
+    A weighted average with weights between 0 and 1 that sum to 1 is a constrained form of stacking, the most stable
+    one when data are few (Breiman, 1996). A model with weight 0 is not trained at all.
+    """
+
+    def __init__(self, estimators=(), weights=()):
+        self.estimators = estimators
+        self.weights = weights
+
+    def fit(self, X, y, sample_weight=None):
+        self.classes_ = np.unique(np.asarray(y))
+        self.models_ = [_fit_pipeline(clone(model), X, y, sample_weight) if w > 0 else None
+                        for model, w in zip(self.estimators, self.weights)]
+        return self
+
+    def predict_proba(self, X):
+        proba = np.zeros((len(X), len(self.classes_)))
+        for model, w in zip(self.models_, self.weights):
+            if model is not None:
+                proba += w * _full(model, model.predict_proba(X), self.classes_)
+        return proba
+
+
 # The models and their hyperparameter grids.
 # Every list goes from the simplest value to the most complex one (the strongest regularisation first), so the position
 # of a value in its list measures how complex the model is. The one standard error rule of the inner loop relies on it.
@@ -115,13 +175,29 @@ GRIDS = {
         "C": [2.0 ** -5, 2.0 ** -3, 2.0 ** -1, 2.0, 2.0 ** 3, 2.0 ** 5, 2.0 ** 7],
         "gamma": [2.0 ** -13, 2.0 ** -11, 2.0 ** -9, 2.0 ** -7, 2.0 ** -5, 2.0 ** -3, 2.0 ** -1, 2.0],
     },
+    # Stage 5, extensions of the chosen model
+    "ordinal_balanced": {                      # the ordinal model with the rare ratings weighted up (see ClassWeighted)
+        "alpha": [30000.0, 10000.0, 3000.0, 1000.0, 300.0, 100.0, 30.0, 10.0, 3.0, 1.0, 0.3, 0.1],
+        "class_power": [0.0, 0.5, 1.0],
+    },
+    "elastic_net": {                           # L1 + L2 logistic regression: C is the inverse of the penalty, and the
+        "C": [0.0001, 0.0003, 0.001, 0.003, 0.01, 0.03, 0.1, 0.3, 1.0],   # L1 share sets how many coefficients
+                                                                           # become exactly zero
+        "l1_ratio": [1.0, 0.5, 0.2],
+    },
+    "ordinal_rf": {                            # weight of the ordinal model; the random forest gets the rest
+        "w": [1.0, 0.75, 0.5, 0.25, 0.0],
+    },
 }
+ENSEMBLES = {"ordinal_rf": ("ordinal", "random_forest")}   # weighted averages and the models they combine
 SAMPLED = {"random_forest": 15, "gradient_boosting": 20}   # random search: candidates drawn from these grids
 SEARCH_TREES = 150     # trees of a forest while the inner loop compares candidates
 FINAL_TREES = 500      # trees of the forest refitted with the chosen hyperparameters
 INNER_FOLDS = 3        # folds of the inner loop
 INNER_REPEATS = 2      # the inner folds are drawn twice, with two seeds, to make the choice less noisy
 EDGE_LIMIT = 0.2       # a grid must be widened when more than this share of the outer folds choose one of its ends
+BOUNDED = {"w", "l1_ratio", "class_power"}   # their ends are natural limits (only the ordinal model, pure L1, no
+                                             # reweighting), so a choice at an end is not a grid that stops too early
 
 
 def make_model(name, params, final=True):
@@ -129,6 +205,12 @@ def make_model(name, params, final=True):
 
     'final' is False inside the inner loop, where a forest uses fewer trees to compare candidates faster.
     """
+    if name in ENSEMBLES:
+        # each model of the average keeps the hyperparameters chosen for it in its own inner loop
+        first, second = ENSEMBLES[name]
+        models = [make_model(first, params[first], final), make_model(second, params[second], final)]
+        return WeightedEnsemble(models, [params["w"], 1 - params["w"]])
+
     imputer = SimpleImputer(strategy="median")
     scaler = StandardScaler()
 
@@ -152,6 +234,13 @@ def make_model(name, params, final=True):
     elif name == "svm":
         svm = SVC(C=params["C"], gamma=params["gamma"], probability=True, random_state=0)
         classifier = FrankHallOrdinal(svm)
+    elif name == "ordinal_balanced":
+        classifier = ClassWeighted(OrdinalLogisticRegression(alpha=params["alpha"]), power=params["class_power"])
+    elif name == "elastic_net":
+        # the L1 part sets the coefficients of unhelpful features to zero: feature selection inside every fit
+        logistic = LogisticRegression(penalty="elasticnet", solver="saga", C=params["C"], l1_ratio=params["l1_ratio"],
+                                      max_iter=2000)
+        classifier = FrankHallOrdinal(logistic)
     else:
         raise ValueError(name)
 
@@ -174,8 +263,9 @@ def grid_points(name):
 def _values(params):
     """(name shown in the tables, hyperparameter, value) for every value; one set per dataset with per_dataset models."""
     if all(isinstance(value, dict) for value in params.values()):
-        return [(f"{key}_{dataset}", key, value) for dataset, own in params.items() for key, value in own.items()]
-    return [(key, key, value) for key, value in params.items()]
+        return [(f"{key}_{dataset}", key, value) for dataset, own in params.items() for key, value in own.items()
+                if not isinstance(value, dict)]
+    return [(key, key, value) for key, value in params.items() if not isinstance(value, dict)]
 
 
 def flat(params):
@@ -200,7 +290,7 @@ def edge_share(name, choices):
         for shown, key, value in _values(json.loads(text)):
             grid = GRIDS[name][key]
             numeric = all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in grid)
-            if len(grid) >= 3 and numeric:
+            if len(grid) >= 3 and numeric and key not in BOUNDED:
                 at_edge.setdefault(shown, []).append(value in (grid[0], grid[-1]))
     return pd.Series({shown: float(np.mean(flags)) for shown, flags in at_edge.items()}, dtype=float)
 
@@ -271,9 +361,11 @@ class PooledModel(BaseEstimator, ClassifierMixin):
 
 
 def _fit_pipeline(model, X, y, weight):
-    """Fits a pipeline; the sample weights go to its last step, the classifier."""
+    """Fits a pipeline; the sample weights go to its last step, the classifier (or to an ensemble, which shares them)."""
     if weight is None:
         return model.fit(X, y)
+    if not hasattr(model, "steps"):
+        return model.fit(X, y, sample_weight=weight)
     last_step = model.steps[-1][0]
     return model.fit(X, y, **{f"{last_step}__sample_weight": weight})
 
@@ -348,21 +440,40 @@ def inner_splits(inner_frame, label, seed, inner_folds=INNER_FOLDS, inner_repeat
     return splits
 
 
-def dataset_probabilities(name, features, fit_rows, held_out, train_label, weight, classes):
-    """For every dataset, the probabilities that its own model gives to the held out nodules, one per candidate."""
+def candidates_for(name, dataset, base=None):
+    """The candidates of one dataset model. For an ensemble, every weight of its grid, with the hyperparameters that the
+    inner loops of its models already chose for this outer fold ('base'); otherwise the points of the grid."""
+    if name in ENSEMBLES:
+        return [{"w": w, **base[dataset]} for w in GRIDS[name]["w"]]
+    return grid_points(name)
+
+
+def dataset_probabilities(name, features, fit_rows, held_out, train_label, weight, classes, base=None):
+    """For every dataset, the probabilities that its own model gives to the held out nodules, one per candidate.
+
+    For an ensemble, its two models are trained once and every weight only mixes their probabilities.
+    """
     own = {}
     for dataset in sorted(fit_rows["dataset"].unique()):
         rows = fit_rows[fit_rows["dataset"] == dataset]
         rows_weight = None if weight is None else rows[weight]
+        X, y = rows[list(features)], rows[train_label]
+        if name in ENSEMBLES:
+            each = []
+            for model_name in ENSEMBLES[name]:
+                model = _fit_pipeline(make_model(model_name, base[dataset][model_name], final=False), X, y, rows_weight)
+                each.append(_full(model, model.predict_proba(held_out[list(features)]), classes))
+            own[dataset] = [w * each[0] + (1 - w) * each[1] for w in GRIDS[name]["w"]]
+            continue
         own[dataset] = []
         for params in grid_points(name):
-            model = make_model(name, params, final=False)
-            model = _fit_pipeline(model, rows[list(features)], rows[train_label], rows_weight)
+            model = _fit_pipeline(make_model(name, params, final=False), X, y, rows_weight)
             own[dataset].append(_full(model, model.predict_proba(held_out[list(features)]), classes))
     return own
 
 
-def inner_scores(name, strategy, features, inner_frame, training, train_label, weight, splits, classes, label, rules):
+def inner_scores(name, strategy, features, inner_frame, training, train_label, weight, splits, classes, label, rules,
+                 base=None):
     """Mean QWK of every (candidate, decision rule) on every inner split: one row per candidate, rule and split.
 
     A candidate is one set of hyperparameters, written as JSON. With per_dataset each dataset model has its own
@@ -370,7 +481,7 @@ def inner_scores(name, strategy, features, inner_frame, training, train_label, w
     candidate, and every pair (one for LNDb, one for LIDC IDRI) is scored by averaging their probabilities, as
     PooledModel does. The pairs are scored one at a time and never stored, which keeps the memory low.
     """
-    candidates = grid_points(name)
+    candidates = grid_points(name) if name not in ENSEMBLES else None
     y = inner_frame[label].to_numpy()
     dataset = inner_frame["dataset"].to_numpy()
     rows = []
@@ -386,10 +497,11 @@ def inner_scores(name, strategy, features, inner_frame, training, train_label, w
             return float(np.mean([quadratic_kappa(y_test[m], prediction[m]) for m in masks]))
 
         if strategy == "per_dataset":
-            own = dataset_probabilities(name, features, fit_rows, held_out, train_label, weight, classes)
+            own = dataset_probabilities(name, features, fit_rows, held_out, train_label, weight, classes, base)
             datasets = list(own)
-            for pair in product(range(len(candidates)), repeat=len(datasets)):
-                key = json.dumps({d: candidates[i] for d, i in zip(datasets, pair)})
+            options = {d: candidates_for(name, d, base) for d in datasets}
+            for pair in product(*[range(len(options[d])) for d in datasets]):
+                key = json.dumps({d: options[d][i] for d, i in zip(datasets, pair)})
                 proba = np.mean([own[d][i] for d, i in zip(datasets, pair)], axis=0)
                 for rule in rules:
                     rows.append((key, rule, split, score(proba, rule)))
@@ -426,7 +538,7 @@ def one_standard_error(table):
 
 def _outer_job(job):
     """One outer fold: the inner loop chooses the hyperparameters and the rule, then the model is refitted and predicts."""
-    name, strategy, features, frame, training, label, weight, train_patients, test_rows, seed, rules = job
+    name, strategy, features, frame, training, label, weight, train_patients, test_rows, seed, rules, base = job
     classes = np.sort(frame[label].unique())
     train_label = _train_label(training, label)
 
@@ -434,7 +546,7 @@ def _outer_job(job):
     inner_frame = frame[frame["patient_id"].isin(train_patients)].reset_index(drop=True)
     splits = inner_splits(inner_frame, label, seed)
     scores = inner_scores(name, strategy, features, inner_frame, training, train_label, weight, splits, classes, label,
-                          rules)
+                          rules, base)
     table = summarise_candidates(name, scores)
     chosen = one_standard_error(table)
     params = json.loads(chosen["params"])
@@ -447,13 +559,17 @@ def _outer_job(job):
 
 
 def nested_cv(name, strategy, frame, features, label="rating", seeds=(0, 1, 2), folds=5, rules=RULES,
-              training=None, weight=None, processes=10):
+              training=None, weight=None, processes=10, base_params=None):
     """Nested cross validation grouped by patient, with the outer folds stratified by dataset and rating.
 
     'frame' holds the nodules that are evaluated. 'training' is the table the models learn from: the same nodules by
     default, or the readings. Returns the out of fold probabilities (seeds x nodules x ratings), the rating decoded with
     the rule chosen for each outer fold, the hyperparameters and rule chosen in each outer fold, and the inner scores
     of every candidate in every outer fold (to draw the validation curves).
+
+    'base_params' is needed for an ensemble: {(seed, outer fold): {dataset: {model: hyperparameters}}}, the choices
+    that the inner loops of its models made in each outer fold. Reusing them is fair, because they were made with the
+    training part of that outer fold only.
     """
     frame = frame.reset_index(drop=True)
     if training is None:
@@ -467,7 +583,9 @@ def nested_cv(name, strategy, frame, features, label="rating", seeds=(0, 1, 2), 
         splitter = StratifiedGroupKFold(folds, shuffle=True, random_state=seed)
         for fold, (train, test) in enumerate(splitter.split(frame, strata, frame["patient_id"])):
             train_patients = frame["patient_id"].iloc[train].unique()
-            jobs.append((name, strategy, features, frame, training, label, weight, train_patients, test, seed, rules))
+            base = None if base_params is None else base_params[(seed, fold)]
+            jobs.append((name, strategy, features, frame, training, label, weight, train_patients, test, seed, rules,
+                         base))
             fold_of.append(fold)
     with Pool(min(processes, len(jobs))) as pool:
         results = pool.map(_outer_job, jobs)

@@ -7,9 +7,10 @@ import json
 
 from sklearn.metrics import cohen_kappa_score
 
-from src.mass_detect.scripts.modelling import (GRIDS, SAMPLED, FrankHallOrdinal, PooledModel, dataset_probabilities, decode,
-                                                edge_share, grid_points, inner_splits, mean_qwk, nested_cv,
-                                                one_standard_error, quadratic_kappa)
+from src.mass_detect.scripts.modelling import (GRIDS, SAMPLED, ClassWeighted, FrankHallOrdinal, PooledModel,
+                                                dataset_probabilities, decode, edge_share, grid_points, inner_splits,
+                                                make_model, mean_qwk, nested_cv, one_standard_error, quadratic_kappa)
+from src.mass_detect.scripts.models import OrdinalLogisticRegression
 
 def synthetic_table(n=400, seed=0): # Two datasets, patients with several nodules, a rating driven by two features
     rng = np.random.default_rng(seed)
@@ -102,3 +103,37 @@ def test_edge_share_flags_values_at_the_ends_of_the_grid():
     choices = pd.DataFrame({"params": [json.dumps({"alpha": 3000.0}), json.dumps({"alpha": 10.0}),
                                        json.dumps({"alpha": 0.1}), json.dumps({"alpha": 10.0})]})
     assert edge_share("ordinal", choices)["alpha"] == 0.5     # 3000 and 0.1 are the two ends of the grid
+
+
+def test_class_weights_give_every_rating_the_same_total_weight():
+    class Recorder(OrdinalLogisticRegression):     # remembers the weights it was trained with
+        def fit(self, X, y, sample_weight=None):
+            self.seen_weight_ = sample_weight
+            return super().fit(X, y, sample_weight)
+    frame = synthetic_table()
+    y = frame["rating"].to_numpy()
+    model = ClassWeighted(Recorder(alpha=1.0), power=1.0).fit(frame[["f1", "f2", "f3"]], y)
+    totals = pd.Series(model.model_.seen_weight_).groupby(y).sum()
+    assert np.allclose(totals, totals.iloc[0])                              # power 1: every rating weighs the same
+    plain = ClassWeighted(Recorder(alpha=1.0), power=0.0).fit(frame[["f1", "f2", "f3"]], y)
+    assert np.allclose(plain.model_.seen_weight_, 1.0)                      # power 0: weights unchanged
+
+
+def test_weighted_ensemble_mixes_its_models():
+    frame = synthetic_table()
+    X, y = frame[["f1", "f2", "f3"]], frame["rating"]
+    base = {"ordinal": {"alpha": 1.0},
+            "random_forest": {"max_features": 0.6, "min_samples_leaf": 5, "max_depth": 8, "class_weight": None}}
+    alone = make_model("ordinal", base["ordinal"]).fit(X, y).predict_proba(X)
+    forest = make_model("random_forest", base["random_forest"], final=False).fit(X, y).predict_proba(X)
+    only_ordinal = make_model("ordinal_rf", {"w": 1.0, **base}, final=False).fit(X, y).predict_proba(X)
+    half = make_model("ordinal_rf", {"w": 0.5, **base}, final=False).fit(X, y).predict_proba(X)
+    assert np.allclose(only_ordinal, alone)                                 # weight 1: the ordinal model alone
+    assert np.allclose(half, 0.5 * alone + 0.5 * forest)                    # weight 0.5: the plain average
+
+
+def test_elastic_net_sets_useless_features_to_zero():
+    frame = synthetic_table()
+    model = make_model("elastic_net", {"C": 0.03, "l1_ratio": 1.0}).fit(frame[["f1", "f2", "f3"]], frame["rating"])
+    coefficients = np.array([binary.coef_[0] for binary in model[-1].models_])
+    assert np.all(coefficients[:, 2] == 0)                                  # f3 carries no signal in synthetic_table

@@ -5,7 +5,8 @@
     Stage 2  models
     Stage 3  training label
     Stage 4  the 1 to 3 scale
-    Stage 5  confirmation on new seeds, and permutation importance
+    Stage 5  extensions of the chosen model: rare ratings weighted up, elastic net, average with the random forest
+    Stage 6  confirmation on new seeds, and permutation importance
 
 Each stage keeps its winner with a rule fixed in advance: the option with the best mean QWK, unless the 95% interval of
 its difference to the simplest option includes zero, in which case the simplest one is kept. Every configuration is saved
@@ -21,7 +22,8 @@ import numpy as np
 import pandas as pd
 
 from .config import MODEL_FEATURES_FILE, MODEL_RESULTS_DIR, READING_FEATURES_FILE
-from .modelling import EDGE_LIMIT, RULES, edge_share, nested_cv, paired_difference, permutation_importance_cv, summary
+from .modelling import (ENSEMBLES, EDGE_LIMIT, RULES, edge_share, nested_cv, paired_difference, permutation_importance_cv,
+                        summary)
 
 SEEDS = (0, 1, 2)
 CONFIRMATION_SEEDS = (10, 11, 12)
@@ -91,6 +93,16 @@ def describe(key, stage, result, label="rating", reference=None):
         row["difference_low"] = difference["low"]
         row["difference_high"] = difference["high"]
     return row
+
+
+def base_params_from(results):
+    """{(seed, outer fold): {dataset: {model: hyperparameters}}}, from the choices of the models of an ensemble."""
+    base = {}
+    for model_name, result in results.items():
+        for row in result["choices"].itertuples(index=False):
+            for dataset, own in json.loads(row.params).items():
+                base.setdefault((int(row.seed), int(row.outer_fold)), {}).setdefault(dataset, {})[model_name] = own
+    return base
 
 
 def choose(rows, keys):
@@ -176,11 +188,41 @@ def run(processes=15, model_file=MODEL_FEATURES_FILE, reading_file=READING_FEATU
         direct = run_config(f"scale3_direct_{tag}", nodules, features, label="rating_3", seeds=SEEDS, **best, **common)
         rows["scale3_direct"] = describe("scale3_direct", "4 scale 1 to 3", direct, label="rating_3", reference=collapsed)
 
-    # Stage 5: the chosen configuration on new seeds, then permutation importance
-    confirmation = run_config(f"confirmation_{tag}", nodules, features, seeds=CONFIRMATION_SEEDS, **final, **common)
-    rows["confirmation"] = describe("confirmation", "5 confirmation", confirmation)
+    # Stage 5: extensions of the chosen model, with label A and one model per dataset. Each one is compared with the
+    # chosen configuration by the same rule as every stage, the chosen configuration being the simplest option.
+    chosen["final_model"] = chosen["model"]
+    if chosen["strategy"] == "per_dataset" and chosen["label"] == "A" and "random_forest" in stage2:
+        on_both = dict(strategy="per_dataset", seeds=SEEDS, **common)
+        stage5 = {"chosen": final_result}
+        stage5["ordinal_balanced"] = run_config("extension_ordinal_balanced", nodules, features, name="ordinal_balanced",
+                                                **on_both)
+        stage5["elastic_net"] = run_config("extension_elastic_net", nodules, features, name="elastic_net", **on_both)
+        # the ensemble reuses the hyperparameters that the ordinal model and the forest chose in each outer fold
+        base = base_params_from({"ordinal": stage2["ordinal"], "random_forest": stage2["random_forest"]})
+        stage5["ordinal_rf"] = run_config("extension_ordinal_rf", nodules, features, name="ordinal_rf",
+                                          base_params=base, **on_both)
+        for key, result in stage5.items():
+            rows[f"extension_{key}"] = describe(f"extension_{key}", "5 extension", result, reference=stage5["chosen"])
+        winner = choose({k: rows[f"extension_{k}"] for k in stage5}, list(stage5))
+        if winner != "chosen":
+            chosen["final_model"] = winner
+            final = dict(name=winner, strategy="per_dataset")
+            final_result = stage5[winner]
+    final_tag = f"{chosen['final_model']}_{chosen['strategy']}_{chosen['label']}"
 
-    importance_file = results_dir / f"permutation_importance_{tag}.csv"
+    # Stage 6: the final configuration on new seeds, then permutation importance. An ensemble first needs the choices
+    # of its models on the new seeds.
+    extra = {}
+    if final["name"] in ENSEMBLES:
+        bases = {m: run_config(f"confirmation_base_{m}_{chosen['strategy']}", nodules, features, name=m,
+                               strategy=chosen["strategy"], seeds=CONFIRMATION_SEEDS, **common)
+                 for m in ENSEMBLES[final["name"]]}
+        extra["base_params"] = base_params_from(bases)
+    confirmation = run_config(f"confirmation_{final_tag}", nodules, features, seeds=CONFIRMATION_SEEDS, **final,
+                              **extra, **common)
+    rows["confirmation"] = describe("confirmation", "6 confirmation", confirmation)
+
+    importance_file = results_dir / f"permutation_importance_{final_tag}.csv"
     if not importance_file.exists():
         importance = permutation_importance_cv(final["name"], final["strategy"], nodules, features,
                                                final_result["choices"], training=final.get("training"),
