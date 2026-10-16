@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import pydicom
 import warnings
+from .cohort import median_rating, mode_rating
 from .config import READER_RATINGS_FILE
 from .schema import SCHEMA, equivalent_diameter
 
@@ -127,7 +128,8 @@ def build_lidc_table():
                 "volume_mm3": volume,
                 "volume_is_placeholder": False,
                 "is_nodule": 1,
-                "mal_mean": ratings.mean(), "mal_min": ratings.min(), "mal_max": ratings.max(),
+                "mal_mean": ratings.mean(), "mal_median": median_rating(ratings), "mal_mode": mode_rating(ratings),
+                "mal_min": ratings.min(), "mal_max": ratings.max(),
                 "n_rated": len(ratings),
                 "n_readings": len(annotations),
                 "reclustered": regrouped,
@@ -148,7 +150,7 @@ def build_lidc_table():
     gave_up = sorted(set(scans_where_pylidc_gave_up))
     print(f"pylidc could not keep every group at four annotations or fewer in {len(gave_up)} scans: {gave_up}")
     print(f"After applying the rule once, {len(oversized_groups)} groups still have more than four annotations. "
-          "They are kept and flagged in oversized_group:")
+          "They are flagged in oversized_group and removed in notebook 02:")
     for item in oversized_groups:
         print(f"  {item['patient_id']}: {item['annotations']} annotations, ratings {item['ratings']}, "
               f"spread {item['spread_over_diameter']} diameters")

@@ -9,10 +9,10 @@ import numpy as np
 import pandas as pd
 import time
 from .config import (CENTRE_INDEX, PATCH_SIZE, SPACING_MM, LIDC_MANIFEST_FILE, LNDB_DIR, LNDB_MANIFEST_FILE, MASK_FILE, PATCHES_DIR,
-                     READINGS_FILE, ROI_DIR, ROI_ICC_FILE, ROI_RADIOMICS_FILE)
+                     READINGS_FILE, ROI_DIR, ROI_ICC_FILE, ROI_RADIOMICS_FILE, ROI_WAVELET_FILE)
 from .lidc import import_pylidc
 from .patches import extract_patch, read_series
-from .radiomics_features import ROBUST_ICC, extract, icc_2_1
+from .radiomics_features import IMAGE_TYPES, ROBUST_ICC, WAVELET, extract, icc_2_1
 from .schema import equivalent_diameter
 
 CONSENSUS_LEVEL = 0.5   # a voxel is in the consensus when at least half of the readers drew it (as in pylidc)
@@ -141,35 +141,59 @@ def roi_quality(cohort): # Checks per nodule: readers, consensus size and how fa
 # PyRadiomics on every region
 
 def _region_features(item): # Features of the consensus and of every reader mask of one nodule (runs in a worker)
-    patch_id, patch_file = item
+    patch_id, patch_file, image_types = item
     patch = np.load(PATCHES_DIR / patch_file)
     rois = np.load(ROI_DIR / f"{patch_id}.npz")
     regions = [("consensus", rois["consensus"])] + list(zip(rois["readers"], rois["masks"]))
     rows = []
     for roi, mask in regions:
         try:
-            rows.append({"patch_id": patch_id, "roi": str(roi), **extract(patch, mask)})
+            rows.append({"patch_id": patch_id, "roi": str(roi), **extract(patch, mask, image_types)})
         except Exception as error:   # one failing region must not stop the run
             rows.append({"patch_id": patch_id, "roi": str(roi), "error": str(error)})
     return rows
 
-def extract_roi_radiomics(cohort, processes=12): # Saves one row per region to ROI_RADIOMICS_FILE
+def extract_roi_radiomics(cohort, processes=12, image_types=IMAGE_TYPES, output_file=ROI_RADIOMICS_FILE, part_size=250):
+    """Saves one row per region to output_file.
+
+    The rows are first written in parts of part_size nodules to a folder next to output_file, so a run that stops
+    (a restart of the machine) continues from the last part instead of starting again.
+    """
     manifest = pd.concat([pd.read_csv(LNDB_MANIFEST_FILE), pd.read_csv(LIDC_MANIFEST_FILE)], ignore_index=True)
     file_of = dict(zip(manifest["patch_id"], manifest["file"]))
-    items = [(p, file_of[p]) for p in cohort["patch_id"]]
-    started, rows = time.time(), []
+    parts_dir = output_file.with_name(output_file.stem + "_parts")
+    parts_dir.mkdir(exist_ok=True)
+    done = set()
+    for part in parts_dir.glob("part_*.csv"):
+        done |= set(pd.read_csv(part, usecols=["patch_id"])["patch_id"])
+    items = [(p, file_of[p], image_types) for p in cohort["patch_id"] if p not in done]
+    print(f"{len(done)} nodules already extracted, {len(items)} to go", flush=True)
+
+    started, rows, part = time.time(), [], len(list(parts_dir.glob("part_*.csv")))
     with Pool(processes) as pool:
-        for number, nodule_rows in enumerate(pool.imap_unordered(_region_features, items, chunksize=4), start=1):
+        for number, nodule_rows in enumerate(pool.imap_unordered(_region_features, items, chunksize=2), start=1):
             rows += nodule_rows
-            if number % 500 == 0:
+            if number % part_size == 0 or number == len(items):
+                pd.DataFrame(rows).to_csv(parts_dir / f"part_{part:03d}.csv", index=False)
+                part, rows = part + 1, []
                 print(f"{number}/{len(items)} nodules, {time.time() - started:.0f} s", flush=True)
-    features = pd.DataFrame(rows)
-    features.to_csv(ROI_RADIOMICS_FILE, index=False)
-    print(f"{len(features)} regions from {len(items)} nodules in {time.time() - started:.0f} s")
+    features = pd.concat([pd.read_csv(p) for p in sorted(parts_dir.glob("part_*.csv"))], ignore_index=True)
+    features.to_csv(output_file, index=False)
+    print(f"{len(features)} regions saved to {output_file.name} in {time.time() - started:.0f} s")
     return features
 
-def radiomic_columns(features): # The PyRadiomics columns: original image and Laplacian of Gaussian images
-    return [c for c in features.columns if c.startswith(("original_", "log-"))]
+def extract_roi_wavelet(cohort, processes=12): # The same regions on the wavelet images, saved to ROI_WAVELET_FILE
+    return extract_roi_radiomics(cohort, processes, image_types=WAVELET, output_file=ROI_WAVELET_FILE)
+
+def load_roi_radiomics(): # Every region with its features from the original, LoG and wavelet images
+    features = pd.read_csv(ROI_RADIOMICS_FILE)
+    wavelet = pd.read_csv(ROI_WAVELET_FILE)
+    # PyRadiomics always adds the shape features of the mask, which are already in the first table
+    wavelet = wavelet[["patch_id", "roi"] + [c for c in wavelet.columns if c.startswith("wavelet-")]]
+    return features.merge(wavelet, on=["patch_id", "roi"], how="left", validate="one_to_one")
+
+def radiomic_columns(features): # The PyRadiomics columns: original image, Laplacian of Gaussian and wavelet images
+    return [c for c in features.columns if c.startswith(("original_", "log-", "wavelet-"))]
 
 def add_roi_diameters(features): # Size of the radiologists' region, from the PyRadiomics shape features
     features = features.copy()

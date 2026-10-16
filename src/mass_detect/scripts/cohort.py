@@ -1,13 +1,31 @@
-"""The study cohort: which nodules enter the models, and their labels on the 1 to 5 and the 1 to 3 scale."""
+"""The study cohort: which nodules enter the models, and their labels.
+
+The label of a nodule is the median of its radiologists' ratings rounded half up, on the 1 to 5 scale, and the binary
+scale derived from it (suspicious when the rating is 4 or 5). The mean and the mode of the ratings are kept as well,
+only to compare ways of combining the radiologists.
+"""
 import numpy as np
 import pandas as pd
 from .config import LIDC_MANIFEST_FILE, NODULE_TABLE
 
-def rounded_rating(mean_rating): # Mean of the radiologists' ratings rounded half up, so 2.5 becomes 3
-    return np.floor(np.asarray(mean_rating, dtype=float) + 0.5).astype(int)
+def rounded_rating(rating): # A rating rounded half up, so 2.5 becomes 3 (the mean, the median and the mode can end in .5)
+    return np.floor(np.asarray(rating, dtype=float) + 0.5).astype(int)
 
-def three_level(rating): # 1 to 3 scale from a 1 to 5 rating: ratings 1 and 2 give 1, rating 3 gives 2, ratings 4 and 5 give 3
-    return np.digitize(rating, [2.5, 3.5]) + 1
+def median_rating(ratings): # Median of the ratings of one nodule; with an even number of readers it can end in .5
+    ratings = np.asarray(ratings, dtype=float)
+    ratings = ratings[~np.isnan(ratings)]                  # ratings left blank do not count
+    return float(np.median(ratings)) if len(ratings) else np.nan
+
+def mode_rating(ratings): # The most frequent rating of one nodule; on a tie, the median of the tied ratings
+    ratings = np.asarray(ratings, dtype=float)
+    ratings = ratings[~np.isnan(ratings)]
+    if not len(ratings):
+        return np.nan
+    values, counts = np.unique(ratings, return_counts=True)
+    return float(np.median(values[counts == counts.max()]))   # two readers who disagree, 2 and 4, give 3
+
+def suspicious(rating): # Binary scale from a rounded 1 to 5 rating: 1 for ratings 4 and 5, 0 for ratings 1 to 3
+    return (np.asarray(rating) >= 4).astype(int)
 
 def lndb_patch_id(nodule_uid): # LNDb-0001_7 becomes LNDb-0001_f007, the name of its patch file
     ct, finding = nodule_uid.rsplit("_", 1)
@@ -22,7 +40,7 @@ def select_cohort(table=None, lidc_manifest=None): # Applies the inclusion rules
     rules = {
         "all findings": pd.Series(True, index=table.index),
         "is a nodule": table["is_nodule"] == 1,
-        "has a malignancy rating": table["mal_mean"].notna(),
+        "has a malignancy rating": table["mal_median"].notna(),
         "has a radiologist mask (3 mm or more)": ~table["volume_is_placeholder"].astype(bool),
         "at most four annotations (LIDC)": ~table["oversized_group"].fillna(False).astype(bool),
         "position confirmed in its patch (LIDC)": (table["dataset"] == "LNDb") | table["nodule_uid"].isin(verified),
@@ -37,6 +55,8 @@ def select_cohort(table=None, lidc_manifest=None): # Applies the inclusion rules
 
     cohort = table[keep].copy()
     cohort["patch_id"] = [lndb_patch_id(u) if d == "LNDb" else u for u, d in zip(cohort["nodule_uid"], cohort["dataset"])]
-    cohort["rating"] = rounded_rating(cohort["mal_mean"])
-    cohort["rating_3"] = three_level(cohort["rating"])
+    cohort["rating"] = rounded_rating(cohort["mal_median"])          # the label: the median, rounded half up
+    cohort["suspicious"] = suspicious(cohort["rating"])              # the binary scale
+    cohort["rating_mean"] = rounded_rating(cohort["mal_mean"])       # the other two ways of combining the readers,
+    cohort["rating_mode"] = rounded_rating(cohort["mal_mode"])       # kept only to compare them with the median
     return cohort.reset_index(drop=True), funnel

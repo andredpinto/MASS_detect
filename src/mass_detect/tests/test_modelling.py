@@ -1,15 +1,17 @@
-"""Unit tests of the models, decision rules, pooling and nested cross validation of notebook 06."""
+"""Unit tests of the models, the binary answer, pooling, nested cross validation and validation across datasets of notebook 06."""
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import StratifiedGroupKFold
 import json
 
-from sklearn.metrics import cohen_kappa_score
+from sklearn.metrics import balanced_accuracy_score, cohen_kappa_score, roc_auc_score
 
-from src.mass_detect.scripts.modelling import (GRIDS, SAMPLED, ClassWeighted, FrankHallOrdinal, PooledModel,
-                                                dataset_probabilities, decode, edge_share, grid_points, inner_splits,
-                                                make_model, mean_qwk, nested_cv, one_standard_error, quadratic_kappa)
+from src.mass_detect.scripts.modelling import (GRIDS, SAMPLED, ClassWeighted, FrankHallOrdinal, PooledModel, auc,
+                                                best_threshold, dataset_probabilities, decode, edge_share,
+                                                external_validation, grid_points, harmonise_to, inner_splits,
+                                                make_model, mean_qwk, nested_cv, one_standard_error, quadratic_kappa,
+                                                reading_agreement, suspicious_probability)
 from src.mass_detect.scripts.models import OrdinalLogisticRegression
 
 def synthetic_table(n=400, seed=0): # Two datasets, patients with several nodules, a rating driven by two features
@@ -32,12 +34,12 @@ def test_frank_hall_gives_valid_ordered_probabilities():
     expected = proba @ np.arange(1, 6)
     assert np.corrcoef(expected, frame["f1"] - frame["f2"])[0, 1] > 0.5     # higher latent value, higher expected rating
 
-def test_decision_rules_on_a_known_distribution():
+def test_the_answer_on_a_known_distribution():
     proba = np.array([[0.35, 0.10, 0.15, 0.20, 0.20]])
     classes = np.arange(1, 6)
-    assert decode(proba, classes, "argmax")[0] == 1          # the most probable rating
-    assert decode(proba, classes, "median")[0] == 3          # cumulative 0.35, 0.45, 0.60: the median is 3
-    assert decode(proba, classes, "mean")[0] == 3            # expected rating 2.80, rounded half up
+    assert decode(proba, classes)[0] == 1                                 # the most probable rating
+    assert np.isclose(suspicious_probability(proba, classes)[0], 0.40)   # a rating of 4 or 5
+    assert np.isclose(suspicious_probability(np.array([[0.7, 0.3]]), [0, 1])[0], 0.3)   # binary scale: class 1
 
 def test_combat_leaves_lidc_untouched():
     frame = synthetic_table()
@@ -137,3 +139,55 @@ def test_elastic_net_sets_useless_features_to_zero():
     model = make_model("elastic_net", {"C": 0.03, "l1_ratio": 1.0}).fit(frame[["f1", "f2", "f3"]], frame["rating"])
     coefficients = np.array([binary.coef_[0] for binary in model[-1].models_])
     assert np.all(coefficients[:, 2] == 0)                                  # f3 carries no signal in synthetic_table
+
+
+def test_auc_equals_sklearn():
+    rng = np.random.default_rng(0)
+    y, probability = rng.integers(0, 2, 300), rng.random(300)
+    probability[:20] = 0.5                                                  # ties
+    weight = rng.random(300)
+    assert np.isclose(auc(y, probability), roc_auc_score(y, probability))
+    assert np.isclose(auc(y, probability, weight), roc_auc_score(y, probability, sample_weight=weight))
+
+
+def test_best_threshold_maximises_the_balanced_accuracy():
+    rng = np.random.default_rng(0)
+    y = (rng.random(400) < 0.2).astype(int)                                 # one suspicious nodule in five
+    probability = np.clip(0.15 + 0.3 * y + rng.normal(0, 0.1, 400), 0, 1)
+    dataset = np.array(["LNDb", "LIDC"] * 200)
+    threshold = best_threshold(y, probability, dataset)
+    def mean_ba(t):
+        return np.mean([balanced_accuracy_score(y[dataset == d], probability[dataset == d] >= t) for d in ("LNDb", "LIDC")])
+    assert all(mean_ba(threshold) >= mean_ba(t) - 1e-9 for t in np.quantile(probability, np.linspace(0, 1, 201)))
+    assert threshold < 0.5                                                  # with rare positives, 0.5 would be too high
+
+
+def test_nested_cv_on_the_binary_scale_gives_a_threshold_and_answers():
+    frame = synthetic_table()
+    frame.loc[frame.dataset == "LNDb", "f1"] -= 2.0                       # without the scanner shift of LNDb
+    frame["suspicious"] = (frame["rating"] >= 4).astype(int)
+    result = nested_cv("ordinal", "pooled", frame, ["f1", "f2", "f3"], label="suspicious", seeds=(0,), processes=2)
+    assert result["proba"].shape == (1, len(frame), 2)
+    assert set(np.unique(result["suspicious_pred"])) <= {0, 1} and result["choices"]["threshold"].between(0, 1).all()
+    assert auc(frame["suspicious"].to_numpy(), result["suspicious_proba"][0]) > 0.7
+
+
+def test_external_validation_never_trains_on_the_other_dataset():
+    frame = synthetic_table()
+    result = external_validation("ordinal", frame, ["f1", "f2", "f3"], source="LIDC", seeds=(0,), processes=1)
+    assert np.array_equal(result["rows"], np.flatnonzero(frame["dataset"] == "LNDb"))
+    assert result["proba"].shape == (1, (frame["dataset"] == "LNDb").sum(), 5)
+    # the LNDb features carry a scanner shift; harmonising them onto the LIDC scale leaves LIDC untouched
+    adjusted = harmonise_to(frame, ["f1", "f2", "f3"], reference="LIDC")
+    lidc = frame["dataset"] == "LIDC"
+    assert np.allclose(adjusted.loc[lidc, "f1"], frame.loc[lidc, "f1"])
+    assert abs(adjusted.loc[~lidc, "f1"].mean() - frame.loc[lidc, "f1"].mean()) < 0.5
+
+
+def test_reading_agreement_weights_every_nodule_the_same():
+    frame = pd.DataFrame({"patch_id": ["a", "b"], "dataset": ["LNDb", "LNDb"]})
+    readings = pd.DataFrame({"patch_id": ["a", "a", "a", "b"], "dataset": "LNDb", "reader_rating": [1, 1, 5, 5]})
+    decoded = np.array([[1, 5]])
+    expected = cohen_kappa_score([1, 1, 5, 5], [1, 1, 1, 5], weights="quadratic", sample_weight=[1 / 3, 1 / 3, 1 / 3, 1])
+    out = reading_agreement(frame, decoded, np.array([[0.1, 0.9]]), readings)
+    assert np.isclose(out["reader_qwk_LNDb"], expected) and np.isclose(out["reader_qwk"], expected)

@@ -31,9 +31,11 @@ LIDC_MANIFEST_FILE = PATCHES_DIR / "manifest_lidc.csv"    # where each LIDC patc
 # Radiologists' regions (src/mass_detect/scripts/rois.py)
 ROI_DIR = PATCHES_DIR / "rois"                              # one .npz per nodule: every reader mask and the consensus mask
 READINGS_FILE = PATCHES_DIR / "readings.csv"                # one row per reading: nodule, reader, rating
-ROI_RADIOMICS_FILE = PATCHES_DIR / "radiomics_rois.csv"     # PyRadiomics features of every region
+ROI_RADIOMICS_FILE = PATCHES_DIR / "radiomics_rois.csv"     # PyRadiomics features of every region (original and LoG images)
+ROI_WAVELET_FILE = PATCHES_DIR / "radiomics_rois_wavelet.csv"   # PyRadiomics features of every region on the wavelet images
 ROI_ICC_FILE = PATCHES_DIR / "radiomics_rois_icc.csv"       # robustness of every feature between two readers
 FEATURE_REPORT_FILE = PATCHES_DIR / "feature_filter_report.csv"   # every feature removed by the filters of notebook 05, and why
+FEATURE_SETS_FILE = PATCHES_DIR / "feature_sets.json"      # the kept features with and without the wavelet images
 MODEL_FEATURES_FILE = PATCHES_DIR / "model_features.csv"     # one row per cohort nodule: kept features, label and groups (read by notebook 06)
 READING_FEATURES_FILE = PATCHES_DIR / "reading_features.csv" # one row per reading: kept features of the reader's region and that reader's rating
 MODEL_RESULTS_DIR = PATCHES_DIR / "model_results"          # every configuration of notebook 06 and the summary table

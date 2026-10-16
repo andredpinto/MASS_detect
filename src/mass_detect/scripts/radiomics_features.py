@@ -12,26 +12,32 @@ from .patches import extract_patch
 SETTINGS = {"binWidth": 25, "resampledPixelSpacing": None, "interpolator": "sitkLinear", "label": 1,
             "minimumROIDimensions": 1, "minimumROISize": 8, "geometryTolerance": 1e-3}
 LOG_SIGMAS_MM = [1.0, 2.0, 3.0]
+IMAGE_TYPES = {"Original": {}, "LoG": {"sigma": LOG_SIGMAS_MM}}   # the original image and the LoG images
+# Wavelet: the PyRadiomics default, one level of the coif1 wavelet, which gives the 8 combinations of a low (L) or high (H)
+# pass filter along x, y and z (LLL to HHH). Shape features exist only on the original image, so they are not repeated.
+WAVELET = {"Wavelet": {}}
 ROBUST_ICC = 0.75
 logging.getLogger("radiomics").setLevel(logging.ERROR)
 
-def make_extractor():
+def make_extractor(image_types=IMAGE_TYPES):
     extractor = featureextractor.RadiomicsFeatureExtractor(**SETTINGS)
     extractor.enableAllFeatures()
-    extractor.enableImageTypes(Original={}, LoG={"sigma": LOG_SIGMAS_MM})
+    extractor.disableAllImageTypes()   # PyRadiomics enables the original image by default; only the requested ones are used
+    extractor.enableImageTypes(**image_types)
     return extractor
 
-_EXTRACTOR = None
+_EXTRACTORS = {}
 
-def extract(patch, mask): # Radiomic features of one region. Returns an empty dict when the region is too small.
-    global _EXTRACTOR
-    _EXTRACTOR = _EXTRACTOR or make_extractor() # one extractor per worker process
+def extract(patch, mask, image_types=IMAGE_TYPES): # Radiomic features of one region. Returns an empty dict when the region is too small.
+    key = tuple(image_types)
+    if key not in _EXTRACTORS:
+        _EXTRACTORS[key] = make_extractor(image_types)   # one extractor per worker process and image type
     if mask.sum() < SETTINGS["minimumROISize"]: return {}
     image = sitk.GetImageFromArray(np.clip(patch.astype(np.float32), *HU_RANGE))
     region = sitk.GetImageFromArray(mask.astype(np.uint8))
     image.SetSpacing([SPACING_MM] * 3)     # the real voxel size, so that shape features and LoG sigmas are in mm
     region.SetSpacing([SPACING_MM] * 3)
-    values = _EXTRACTOR.execute(image, region)
+    values = _EXTRACTORS[key].execute(image, region)
     return {name: float(value) for name, value in values.items() if not name.startswith("diagnostics")}
 
 def icc_2_1(ratings): # ICC(2,1) of an (n subjects x k raters) array: two way random effects, absolute agreement, single rater.

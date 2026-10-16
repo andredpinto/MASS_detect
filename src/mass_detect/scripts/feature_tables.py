@@ -58,7 +58,7 @@ def label_free_filter(consensus, icc, names): # Keeps the features that are pres
     return final, pd.DataFrame(report)
 
 def model_tables(cohort, features, readings, kept): # One row per nodule (consensus region) and one row per reading (reader region)
-    keys = ["patch_id", "nodule_uid", "dataset", "patient_id", "scan_id", "rating", "rating_3", "mal_mean", "n_rated",
+    keys = ["patch_id", "nodule_uid", "dataset", "patient_id", "scan_id", "rating", "suspicious", "rating_mean", "rating_mode", "n_rated",
             "manufacturer", "kernel", "slice_thickness_mm", "pixel_spacing_mm"]
     sizes = ["roi_diameter_mm", "roi_axial_diameter_mm"]
     nodules = cohort[keys].merge(features.loc[features["roi"] == "consensus", ["patch_id"] + sizes + kept], on="patch_id", how="left")
