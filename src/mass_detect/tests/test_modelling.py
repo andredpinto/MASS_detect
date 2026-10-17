@@ -8,10 +8,9 @@ import json
 from sklearn.metrics import balanced_accuracy_score, cohen_kappa_score, roc_auc_score
 
 from src.mass_detect.scripts.modelling import (GRIDS, SAMPLED, ClassWeighted, FrankHallOrdinal, PooledModel, auc,
-                                                best_threshold, dataset_probabilities, decode, edge_share,
-                                                external_validation, grid_points, harmonise_to, inner_splits,
-                                                make_model, mean_qwk, nested_cv, one_standard_error, quadratic_kappa,
-                                                reading_agreement, suspicious_probability)
+                                                best_threshold, decode, edge_share, external_validation, grid_points,
+                                                harmonise_to, make_model, mean_qwk, nested_cv, one_standard_error,
+                                                quadratic_kappa, reading_agreement, suspicious_probability)
 from src.mass_detect.scripts.models import OrdinalLogisticRegression
 
 def synthetic_table(n=400, seed=0): # Two datasets, patients with several nodules, a rating driven by two features
@@ -39,7 +38,6 @@ def test_the_answer_on_a_known_distribution():
     classes = np.arange(1, 6)
     assert decode(proba, classes)[0] == 1                                 # the most probable rating
     assert np.isclose(suspicious_probability(proba, classes)[0], 0.40)   # a rating of 4 or 5
-    assert np.isclose(suspicious_probability(np.array([[0.7, 0.3]]), [0, 1])[0], 0.3)   # binary scale: class 1
 
 def test_combat_leaves_lidc_untouched():
     frame = synthetic_table()
@@ -51,9 +49,8 @@ def test_combat_leaves_lidc_untouched():
 
 def test_every_strategy_predicts_every_rating():
     frame = synthetic_table()
-    for strategy in ("pooled", "indicator", "combat", "per_dataset"):
-        params = {"LNDb": {"alpha": 1.0}, "LIDC": {"alpha": 1.0}} if strategy == "per_dataset" else {"alpha": 1.0}
-        proba = PooledModel("ordinal", params, strategy, ["f1", "f2", "f3"]).fit(frame, frame["rating"]).predict_proba(frame)
+    for strategy in ("pooled", "indicator", "combat"):
+        proba = PooledModel("ordinal", {"alpha": 1.0}, strategy, ["f1", "f2", "f3"]).fit(frame, frame["rating"]).predict_proba(frame)
         assert proba.shape == (len(frame), 5) and np.allclose(proba.sum(axis=1), 1), strategy
 
 def test_nested_cv_never_splits_a_patient_and_predicts_every_nodule():
@@ -71,19 +68,6 @@ def test_one_standard_error_rule_prefers_the_simplest_candidate_within_the_noise
                           "score": [0.60, 0.59, 0.55], "se": [0.02, 0.02, 0.02], "complexity": [5, 1, 0]})
     assert one_standard_error(table)["params"] == "simple"      # 0.59 is within 0.02 of 0.60, 0.55 is not
 
-
-def test_per_dataset_pairs_match_the_pooled_model():
-    # In the inner loop each dataset model is trained once per candidate and the pairs are averaged afterwards;
-    # this must give exactly the probabilities of a PooledModel trained with that pair of hyperparameters
-    frame = synthetic_table()
-    features, classes = ["f1", "f2", "f3"], np.arange(1, 6)
-    train, test = inner_splits(frame, "rating", seed=0, inner_folds=3, inner_repeats=1)[0]
-    own = dataset_probabilities("ordinal", features, frame.iloc[train], frame.iloc[test], "rating", None, classes)
-    candidates = grid_points("ordinal")
-    pair = (np.mean([own["LIDC"][candidates.index({"alpha": 3.0})], own["LNDb"][candidates.index({"alpha": 300.0})]], axis=0))
-    params = {"LIDC": {"alpha": 3.0}, "LNDb": {"alpha": 300.0}}
-    model = PooledModel("ordinal", params, "per_dataset", features).fit(frame.iloc[train], frame["rating"].iloc[train])
-    assert np.allclose(pair, model.predict_proba(frame.iloc[test]))
 
 
 def test_fast_kappa_equals_sklearn():
@@ -121,18 +105,6 @@ def test_class_weights_give_every_rating_the_same_total_weight():
     assert np.allclose(plain.model_.seen_weight_, 1.0)                      # power 0: weights unchanged
 
 
-def test_weighted_ensemble_mixes_its_models():
-    frame = synthetic_table()
-    X, y = frame[["f1", "f2", "f3"]], frame["rating"]
-    base = {"ordinal": {"alpha": 1.0},
-            "random_forest": {"max_features": 0.6, "min_samples_leaf": 5, "max_depth": 8, "class_weight": None}}
-    alone = make_model("ordinal", base["ordinal"]).fit(X, y).predict_proba(X)
-    forest = make_model("random_forest", base["random_forest"], final=False).fit(X, y).predict_proba(X)
-    only_ordinal = make_model("ordinal_rf", {"w": 1.0, **base}, final=False).fit(X, y).predict_proba(X)
-    half = make_model("ordinal_rf", {"w": 0.5, **base}, final=False).fit(X, y).predict_proba(X)
-    assert np.allclose(only_ordinal, alone)                                 # weight 1: the ordinal model alone
-    assert np.allclose(half, 0.5 * alone + 0.5 * forest)                    # weight 0.5: the plain average
-
 
 def test_elastic_net_sets_useless_features_to_zero():
     frame = synthetic_table()
@@ -161,15 +133,6 @@ def test_best_threshold_maximises_the_balanced_accuracy():
     assert all(mean_ba(threshold) >= mean_ba(t) - 1e-9 for t in np.quantile(probability, np.linspace(0, 1, 201)))
     assert threshold < 0.5                                                  # with rare positives, 0.5 would be too high
 
-
-def test_nested_cv_on_the_binary_scale_gives_a_threshold_and_answers():
-    frame = synthetic_table()
-    frame.loc[frame.dataset == "LNDb", "f1"] -= 2.0                       # without the scanner shift of LNDb
-    frame["suspicious"] = (frame["rating"] >= 4).astype(int)
-    result = nested_cv("ordinal", "pooled", frame, ["f1", "f2", "f3"], label="suspicious", seeds=(0,), processes=2)
-    assert result["proba"].shape == (1, len(frame), 2)
-    assert set(np.unique(result["suspicious_pred"])) <= {0, 1} and result["choices"]["threshold"].between(0, 1).all()
-    assert auc(frame["suspicious"].to_numpy(), result["suspicious_proba"][0]) > 0.7
 
 
 def test_external_validation_never_trains_on_the_other_dataset():

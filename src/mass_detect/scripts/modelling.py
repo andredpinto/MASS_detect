@@ -7,9 +7,9 @@ hyperparameters and the threshold, so the outer folds never take part in any cho
 folds are repeated with two seeds, and the choice follows the one standard error rule (Hastie et al., 2009, section
 7.10): the simplest candidate whose score is within one standard error of the best.
 
-Besides the four models of stage 2, three extensions of the chosen model are compared in stage 4: the ordinal model with
-the rare ratings weighted up (ordinal_balanced), an elastic net logistic regression that selects features inside the
-folds (elastic_net), and a weighted average of the ordinal model and the random forest (ordinal_rf).
+Besides the four models of stage 2, two extensions of the chosen model are compared in stage 3: the ordinal model with
+the rare ratings weighted up (ordinal_balanced), and an elastic net logistic regression that selects features inside the
+folds (elastic_net).
 """
 import json
 import warnings
@@ -43,17 +43,13 @@ def decode(proba, classes):
 
 
 def suspicious_probability(proba, classes):
-    """Probability that a nodule is suspicious: of a rating of 4 or 5 on the 1 to 5 scale, of class 1 on the binary scale."""
-    classes = np.asarray(classes)
-    if len(classes) == 2:
-        return proba[..., 1]
-    return proba[..., classes >= 4].sum(axis=-1)
+    """Probability that a nodule is suspicious: the probability of a rating of 4 or 5."""
+    return proba[..., np.asarray(classes) >= 4].sum(axis=-1)
 
 
-def is_suspicious(y, classes):
-    """The binary label of every nodule, from a label on the 1 to 5 scale or on the binary scale."""
-    y = np.asarray(y)
-    return (y == 1).astype(int) if len(classes) == 2 else (y >= 4).astype(int)
+def is_suspicious(y):
+    """The binary label of every nodule: 1 for a rating of 4 or 5."""
+    return (np.asarray(y) >= 4).astype(int)
 
 
 # Ordinal wrapper for classifiers that ignore the order of the ratings
@@ -120,31 +116,6 @@ class ClassWeighted(BaseEstimator, ClassifierMixin):
         return self.model_.predict_proba(X)
 
 
-class WeightedEnsemble(BaseEstimator, ClassifierMixin):
-    """Weighted average of the probabilities of several models, each a full pipeline of make_model.
-
-    A weighted average with weights between 0 and 1 that sum to 1 is a constrained form of stacking, the most stable
-    one when data are few (Breiman, 1996). A model with weight 0 is not trained at all.
-    """
-
-    def __init__(self, estimators=(), weights=()):
-        self.estimators = estimators
-        self.weights = weights
-
-    def fit(self, X, y, sample_weight=None):
-        self.classes_ = np.unique(np.asarray(y))
-        self.models_ = [_fit_pipeline(clone(model), X, y, sample_weight) if w > 0 else None
-                        for model, w in zip(self.estimators, self.weights)]
-        return self
-
-    def predict_proba(self, X):
-        proba = np.zeros((len(X), len(self.classes_)))
-        for model, w in zip(self.models_, self.weights):
-            if model is not None:
-                proba += w * _full(model, model.predict_proba(X), self.classes_)
-        return proba
-
-
 # The models and their hyperparameter grids.
 # Every list goes from the simplest value to the most complex one (the strongest regularisation first), so the position
 # of a value in its list measures how complex the model is. The one standard error rule of the inner loop relies on it.
@@ -177,7 +148,7 @@ GRIDS = {
         "C": [2.0 ** -5, 2.0 ** -3, 2.0 ** -1, 2.0, 2.0 ** 3, 2.0 ** 5, 2.0 ** 7],
         "gamma": [2.0 ** -13, 2.0 ** -11, 2.0 ** -9, 2.0 ** -7, 2.0 ** -5, 2.0 ** -3, 2.0 ** -1, 2.0],
     },
-    # Stage 5, extensions of the chosen model
+    # Stage 3, extensions of the chosen model
     "ordinal_balanced": {                      # the ordinal model with the rare ratings weighted up (see ClassWeighted)
         "alpha": [30000.0, 10000.0, 3000.0, 1000.0, 300.0, 100.0, 30.0, 10.0, 3.0, 1.0, 0.3, 0.1],
         "class_power": [0.0, 0.5, 1.0],
@@ -187,19 +158,15 @@ GRIDS = {
                                                                            # become exactly zero
         "l1_ratio": [1.0, 0.5, 0.2],
     },
-    "ordinal_rf": {                            # weight of the ordinal model; the random forest gets the rest
-        "w": [1.0, 0.75, 0.5, 0.25, 0.0],
-    },
 }
-ENSEMBLES = {"ordinal_rf": ("ordinal", "random_forest")}   # weighted averages and the models they combine
 SAMPLED = {"random_forest": 15, "gradient_boosting": 20}   # random search: candidates drawn from these grids
 SEARCH_TREES = 150     # trees of a forest while the inner loop compares candidates
 FINAL_TREES = 500      # trees of the forest refitted with the chosen hyperparameters
 INNER_FOLDS = 3        # folds of the inner loop
 INNER_REPEATS = 2      # the inner folds are drawn twice, with two seeds, to make the choice less noisy
 EDGE_LIMIT = 0.2       # a grid must be widened when more than this share of the outer folds choose one of its ends
-BOUNDED = {"w", "l1_ratio", "class_power"}   # their ends are natural limits (only the ordinal model, pure L1, no
-                                             # reweighting), so a choice at an end is not a grid that stops too early
+BOUNDED = {"l1_ratio", "class_power"}   # their ends are natural limits (pure L1, no reweighting), so a choice at an
+                                        # end is not a grid that stops too early
 
 
 def make_model(name, params, final=True):
@@ -207,12 +174,6 @@ def make_model(name, params, final=True):
 
     'final' is False inside the inner loop, where a forest uses fewer trees to compare candidates faster.
     """
-    if name in ENSEMBLES:
-        # each model of the average keeps the hyperparameters chosen for it in its own inner loop
-        first, second = ENSEMBLES[name]
-        models = [make_model(first, params[first], final), make_model(second, params[second], final)]
-        return WeightedEnsemble(models, [params["w"], 1 - params["w"]])
-
     imputer = SimpleImputer(strategy="median")
     scaler = StandardScaler()
 
@@ -263,15 +224,12 @@ def grid_points(name):
 
 
 def _values(params):
-    """(name shown in the tables, hyperparameter, value) for every value; one set per dataset with per_dataset models."""
-    if all(isinstance(value, dict) for value in params.values()):
-        return [(f"{key}_{dataset}", key, value) for dataset, own in params.items() for key, value in own.items()
-                if not isinstance(value, dict)]
-    return [(key, key, value) for key, value in params.items() if not isinstance(value, dict)]
+    """(name shown in the tables, hyperparameter, value) for every value."""
+    return [(key, key, value) for key, value in params.items()]
 
 
 def flat(params):
-    """The hyperparameters as a one level dictionary, for example {"alpha_LNDb": 100.0, "alpha_LIDC": 3.0}."""
+    """The hyperparameters as a dictionary, for example {"alpha": 100.0, "class_power": 0.5}."""
     return {shown: value for shown, _, value in _values(params)}
 
 
@@ -305,11 +263,8 @@ class PooledModel(BaseEstimator, ClassifierMixin):
     pooled       both datasets as they are
     indicator    one more column that says whether the nodule comes from LIDC IDRI
     combat       the LNDb features moved onto the scale of LIDC IDRI (reference batch), log diameter as covariate
-    per_dataset  one model per dataset, and the average of their probabilities
 
-    'params' holds the hyperparameters of the model. With per_dataset it holds one set per dataset, for example
-    {"LNDb": {"alpha": 100.0}, "LIDC": {"alpha": 3.0}}: the two datasets differ in size and in label noise, so each
-    model gets its own amount of regularisation.
+    'params' holds the hyperparameters of the model.
     """
 
     def __init__(self, name="ordinal", params=None, strategy="pooled", features=(), final=True):
@@ -343,31 +298,17 @@ class PooledModel(BaseEstimator, ClassifierMixin):
             self.combat_ = ReferenceBatchComBat(list(self.features), reference="LIDC")
             self.combat_.fit(frame[list(self.features)], frame["dataset"].to_numpy(), self._covariate(frame))
 
-        if self.strategy == "per_dataset":
-            self.models_ = {}
-            for dataset in frame["dataset"].unique():
-                rows = (frame["dataset"] == dataset).to_numpy()
-                X = frame.loc[rows, list(self.features)]
-                rows_weight = None if weight is None else weight[rows]
-                self.models_[dataset] = _fit_pipeline(make_model(self.name, self.params[dataset], self.final), X, y[rows], rows_weight)
-        else:
-            self.model_ = _fit_pipeline(make_model(self.name, self.params, self.final), self._matrix(frame), y, weight)
+        self.model_ = _fit_pipeline(make_model(self.name, self.params, self.final), self._matrix(frame), y, weight)
         return self
 
     def predict_proba(self, frame):
-        if self.strategy == "per_dataset":
-            X = frame[list(self.features)]
-            each = [_full(model, model.predict_proba(X), self.classes_) for model in self.models_.values()]
-            return np.mean(each, axis=0)
         return _full(self.model_, self.model_.predict_proba(self._matrix(frame)), self.classes_)
 
 
 def _fit_pipeline(model, X, y, weight):
-    """Fits a pipeline; the sample weights go to its last step, the classifier (or to an ensemble, which shares them)."""
+    """Fits a pipeline; the sample weights go to its last step, the classifier."""
     if weight is None:
         return model.fit(X, y)
-    if not hasattr(model, "steps"):
-        return model.fit(X, y, sample_weight=weight)
     last_step = model.steps[-1][0]
     return model.fit(X, y, **{f"{last_step}__sample_weight": weight})
 
@@ -430,12 +371,6 @@ def auc(y, probability, sample_weight=None):
     return float((ranks[positive].sum() - n_positive * (n_positive + 1) / 2) / (n_positive * n_negative))
 
 
-def log_loss(y, probability):
-    """Mean negative log likelihood of binary answers, with the probabilities kept away from 0 and 1."""
-    probability = np.clip(probability, 1e-6, 1 - 1e-6)
-    return float(-np.mean(y * np.log(probability) + (1 - y) * np.log(1 - probability)))
-
-
 def mean_auc(y, probability, dataset):
     """The primary metric of the binary scale: the AUC in each dataset, averaged over the datasets present."""
     return float(np.mean([auc(y[dataset == d], probability[dataset == d]) for d in np.unique(dataset)]))
@@ -491,55 +426,14 @@ def inner_splits(inner_frame, label, seed, inner_folds=INNER_FOLDS, inner_repeat
     return splits
 
 
-def candidates_for(name, dataset, base=None):
-    """The candidates of one dataset model. For an ensemble, every weight of its grid, with the hyperparameters that the
-    inner loops of its models already chose for this outer fold ('base'); otherwise the points of the grid."""
-    if name in ENSEMBLES:
-        return [{"w": w, **base[dataset]} for w in GRIDS[name]["w"]]
-    return grid_points(name)
+def inner_scores(name, strategy, features, inner_frame, training, train_label, weight, splits, classes, label):
+    """Mean QWK of the most probable rating for every candidate on every inner split: one row per candidate and split.
 
-
-def dataset_probabilities(name, features, fit_rows, held_out, train_label, weight, classes, base=None):
-    """For every dataset, the probabilities that its own model gives to the held out nodules, one per candidate.
-
-    For an ensemble, its two models are trained once and every weight only mixes their probabilities.
+    A candidate is one set of hyperparameters, written as JSON.
     """
-    own = {}
-    for dataset in sorted(fit_rows["dataset"].unique()):
-        rows = fit_rows[fit_rows["dataset"] == dataset]
-        rows_weight = None if weight is None else rows[weight]
-        X, y = rows[list(features)], rows[train_label]
-        if name in ENSEMBLES:
-            each = []
-            for model_name in ENSEMBLES[name]:
-                model = _fit_pipeline(make_model(model_name, base[dataset][model_name], final=False), X, y, rows_weight)
-                each.append(_full(model, model.predict_proba(held_out[list(features)]), classes))
-            own[dataset] = [w * each[0] + (1 - w) * each[1] for w in GRIDS[name]["w"]]
-            continue
-        own[dataset] = []
-        for params in grid_points(name):
-            model = _fit_pipeline(make_model(name, params, final=False), X, y, rows_weight)
-            own[dataset].append(_full(model, model.predict_proba(held_out[list(features)]), classes))
-    return own
-
-
-def inner_scores(name, strategy, features, inner_frame, training, train_label, weight, splits, classes, label, base=None):
-    """Score of every candidate on every inner split: one row per candidate and split.
-
-    On the 1 to 5 scale the score is the mean QWK of the most probable rating. On the binary scale it is minus the mean
-    log loss: the AUC only depends on the order of the nodules, which a penalty barely changes, so it cannot tell a
-    useful penalty from one that shrinks every coefficient to almost nothing; the log loss also judges the probabilities
-    themselves (Gneiting and Raftery, 2007). The AUC is used to evaluate the chosen model.
-
-    A candidate is one set of hyperparameters, written as JSON. With per_dataset each dataset model has its own
-    hyperparameters. The two models are trained independently of each other, so each one is trained once per
-    candidate, and every pair (one for LNDb, one for LIDC IDRI) is scored by averaging their probabilities, as
-    PooledModel does. The pairs are scored one at a time and never stored, which keeps the memory low.
-    """
-    candidates = grid_points(name) if name not in ENSEMBLES else None
+    candidates = grid_points(name)
     y = inner_frame[label].to_numpy()
     dataset = inner_frame["dataset"].to_numpy()
-    binary = len(classes) == 2
     rows = []
     for split, (inner_train, inner_test) in enumerate(splits):
         fit_rows = training[training["patient_id"].isin(inner_frame["patient_id"].iloc[inner_train])]
@@ -548,24 +442,13 @@ def inner_scores(name, strategy, features, inner_frame, training, train_label, w
         masks = [dataset_test == d for d in np.unique(dataset_test)]      # one per dataset, computed once per split
 
         def score(proba):
-            # mean QWK (or mean AUC on the binary scale) of one candidate, with the dataset masks of this split
-            if binary:
-                return -float(np.mean([log_loss(y_test[m], proba[m, 1]) for m in masks]))
+            # mean QWK of one candidate, with the dataset masks of this split
             prediction = decode(proba, classes)
             return float(np.mean([quadratic_kappa(y_test[m], prediction[m]) for m in masks]))
 
-        if strategy == "per_dataset":
-            own = dataset_probabilities(name, features, fit_rows, held_out, train_label, weight, classes, base)
-            datasets = list(own)
-            options = {d: candidates_for(name, d, base) for d in datasets}
-            for pair in product(*[range(len(options[d])) for d in datasets]):
-                key = json.dumps({d: options[d][i] for d, i in zip(datasets, pair)})
-                proba = np.mean([own[d][i] for d, i in zip(datasets, pair)], axis=0)
-                rows.append((key, split, score(proba)))
-        else:
-            for params in candidates:
-                model = _fit(name, params, strategy, features, fit_rows, train_label, weight, final=False)
-                rows.append((json.dumps(params), split, score(model.predict_proba(held_out))))
+        for params in candidates:
+            model = _fit(name, params, strategy, features, fit_rows, train_label, weight, final=False)
+            rows.append((json.dumps(params), split, score(model.predict_proba(held_out))))
     return pd.DataFrame(rows, columns=["params", "split", "score"])
 
 
@@ -605,22 +488,21 @@ def inner_threshold(name, params, strategy, features, inner_frame, training, tra
         model = _fit(name, params, strategy, features, fit_rows, train_label, weight, final=False)
         held_out = inner_frame.iloc[inner_test]
         probability.append(suspicious_probability(model.predict_proba(held_out), classes))
-        y.append(is_suspicious(held_out[label], classes))
+        y.append(is_suspicious(held_out[label]))
         dataset.append(held_out["dataset"].to_numpy())
     return best_threshold(np.concatenate(y), np.concatenate(probability), np.concatenate(dataset))
 
 
 def _outer_job(job):
     """One outer fold: the inner loop chooses the hyperparameters and the threshold, then the model is refitted and predicts."""
-    name, strategy, features, frame, training, label, weight, train_patients, test_rows, seed, base = job
+    name, strategy, features, frame, training, label, weight, train_patients, test_rows, seed = job
     classes = np.sort(frame[label].unique())
     train_label = label
 
     # Inner loop, on the training part of this outer fold only: 3 folds grouped by patient, drawn with 2 seeds
     inner_frame = frame[frame["patient_id"].isin(train_patients)].reset_index(drop=True)
     splits = inner_splits(inner_frame, label, seed)
-    scores = inner_scores(name, strategy, features, inner_frame, training, train_label, weight, splits, classes, label,
-                          base)
+    scores = inner_scores(name, strategy, features, inner_frame, training, train_label, weight, splits, classes, label)
     table = summarise_candidates(name, scores)
     params = json.loads(one_standard_error(table)["params"])
     threshold = inner_threshold(name, params, strategy, features, inner_frame, training, train_label, weight, splits,
@@ -634,7 +516,7 @@ def _outer_job(job):
 
 
 def nested_cv(name, strategy, frame, features, label="rating", seeds=(0, 1, 2), folds=5, training=None, weight=None,
-              processes=10, base_params=None):
+              processes=10):
     """Nested cross validation grouped by patient, with the outer folds stratified by dataset and rating.
 
     'frame' holds the nodules that are evaluated, with their label. 'training' is the table the models learn from: the
@@ -642,10 +524,6 @@ def nested_cv(name, strategy, frame, features, label="rating", seeds=(0, 1, 2), 
     (seeds x nodules x ratings), the most probable rating, the probability of a suspicious nodule and the binary answer
     with the threshold of each outer fold, the hyperparameters and threshold chosen in each outer fold, and the inner
     scores of every candidate in every outer fold (to draw the validation curves).
-
-    'base_params' is needed for an ensemble: {(seed, outer fold): {dataset: {model: hyperparameters}}}, the choices
-    that the inner loops of its models made in each outer fold. Reusing them is fair, because they were made with the
-    training part of that outer fold only.
     """
     frame = frame.reset_index(drop=True)
     if training is None:
@@ -659,8 +537,7 @@ def nested_cv(name, strategy, frame, features, label="rating", seeds=(0, 1, 2), 
         splitter = StratifiedGroupKFold(folds, shuffle=True, random_state=seed)
         for fold, (train, test) in enumerate(splitter.split(frame, strata, frame["patient_id"])):
             train_patients = frame["patient_id"].iloc[train].unique()
-            base = None if base_params is None else base_params[(seed, fold)]
-            jobs.append((name, strategy, features, frame, training, label, weight, train_patients, test, seed, base))
+            jobs.append((name, strategy, features, frame, training, label, weight, train_patients, test, seed))
             fold_of.append(fold)
     with Pool(min(processes, len(jobs))) as pool:
         results = pool.map(_outer_job, jobs)
@@ -807,7 +684,7 @@ def external_validation(name, frame, features, source, label="rating", seeds=(0,
     classes = np.sort(frame[label].unique())
     train_patients = frame.loc[frame["dataset"] == source, "patient_id"].unique()
     test_rows = np.flatnonzero((frame["dataset"] != source).to_numpy())
-    jobs = [(name, "pooled", features, frame, frame, label, None, train_patients, test_rows, seed, None) for seed in seeds]
+    jobs = [(name, "pooled", features, frame, frame, label, None, train_patients, test_rows, seed) for seed in seeds]
     with Pool(min(processes, len(jobs))) as pool:
         results = pool.map(_outer_job, jobs)
 

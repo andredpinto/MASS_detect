@@ -4,17 +4,16 @@
     Stage 0   features: with or without the wavelet images
     Stage 1   ways of using the two datasets together
     Stage 2   models
-    Stage 3   the binary scale: the probability of a rating of 4 or 5 given by the 1 to 5 model, or a model trained on
-              the binary scale
-    Stage 4   extensions of the chosen model: rare ratings weighted up, elastic net, average with the random forest
+    Stage 3   extensions of the chosen model: rare ratings weighted up, elastic net
     Then      the final configuration on new seeds and its permutation importance; a new hospital (trained on one
               dataset, validated on the other); and the final configuration trained on the mean and on the mode of the
               ratings instead of the median
 
-The label is always the median rating of the radiologists, rounded half up, and the predicted rating is the most
-probable one. Each stage keeps its winner with a rule fixed in advance: an option replaces the simplest one only if the
-95% interval of its difference to the simplest option lies above zero, and among such options the one with the best
-primary metric (the mean QWK, or the mean AUC on the binary scale) is kept; otherwise the simplest one stays. Every configuration is saved as soon as it is done, so a stopped
+The label is always the median rating of the radiologists, rounded half up. Every model gives both answers: the most
+probable rating on the 1 to 5 scale, and suspicious or not on the binary scale (the probability of a rating of 4 or 5
+against a threshold chosen in the inner folds). Each stage keeps its winner with a rule fixed in advance: an option
+replaces the simplest one only if the 95% interval of its difference in mean QWK to the simplest option lies above zero,
+and among such options the best one is kept; otherwise the simplest one stays. Every configuration is saved as soon as it is done, so a stopped
 run resumes where it stopped.
 
     OMP_NUM_THREADS=1 python -m src.mass_detect.scripts.run_models
@@ -27,9 +26,8 @@ import numpy as np
 import pandas as pd
 
 from .config import FEATURE_SETS_FILE, MODEL_FEATURES_FILE, MODEL_RESULTS_DIR, READING_FEATURES_FILE
-from .modelling import (ENSEMBLES, EDGE_LIMIT, binary_summary, edge_share, external_validation, is_suspicious,
-                        nested_cv, paired_auc_difference, paired_difference, permutation_importance_cv,
-                        reading_agreement, summary)
+from .modelling import (EDGE_LIMIT, binary_summary, edge_share, external_validation, is_suspicious, nested_cv,
+                        paired_auc_difference, paired_difference, permutation_importance_cv, reading_agreement, summary)
 
 SEEDS = (0, 1, 2)
 CONFIRMATION_SEEDS = (10, 11, 12)
@@ -104,22 +102,20 @@ def describe(key, stage, result, label="rating", reference=None, readings=None):
     frame = result["frame"]
     dataset = frame["dataset"].to_numpy()
     patients = frame["patient_id"].to_numpy()
-    classes = result["classes"]
     row = {"config": key, "stage": stage}
 
-    if len(classes) > 2:
-        y = frame[label].to_numpy()
-        table, primary = summary(y, result["decoded"], dataset, patients)
-        row.update(primary)
-        for d in table.index:
-            for metric in table.columns:
-                row[f"{metric}_{d}"] = table.loc[d, metric]
-        if reference is not None and len(reference["classes"]) > 2:
-            difference = paired_difference(y, reference["decoded"], result["decoded"], dataset, patients)
-            row.update(difference=difference["difference"], difference_low=difference["low"],
-                       difference_high=difference["high"])
+    y = frame[label].to_numpy()
+    table, primary = summary(y, result["decoded"], dataset, patients)
+    row.update(primary)
+    for d in table.index:
+        for metric in table.columns:
+            row[f"{metric}_{d}"] = table.loc[d, metric]
+    if reference is not None:
+        difference = paired_difference(y, reference["decoded"], result["decoded"], dataset, patients)
+        row.update(difference=difference["difference"], difference_low=difference["low"],
+                   difference_high=difference["high"])
 
-    y_binary = is_suspicious(frame[label], classes)
+    y_binary = is_suspicious(y)
     table, primary = binary_summary(y_binary, result["suspicious_proba"], result["suspicious_pred"], dataset, patients)
     row.update(primary)
     for d in table.index:
@@ -139,27 +135,17 @@ def describe(key, stage, result, label="rating", reference=None, readings=None):
     return row
 
 
-def base_params_from(results):
-    """{(seed, outer fold): {dataset: {model: hyperparameters}}}, from the choices of the models of an ensemble."""
-    base = {}
-    for model_name, result in results.items():
-        for row in result["choices"].itertuples(index=False):
-            for dataset, own in json.loads(row.params).items():
-                base.setdefault((int(row.seed), int(row.outer_fold)), {}).setdefault(dataset, {})[model_name] = own
-    return base
-
-
-def choose(rows, keys, metric="mean_qwk", low="difference_low"):
+def choose(rows, keys):
     """The rule fixed in advance. 'keys' go from the simplest option to the most complex one.
 
     An option can replace the simplest one only if the 95% interval of its difference to it lies above zero; among
     those options the best one wins, and if there is none the simplest one stays.
     """
     simplest = keys[0]
-    better = [key for key in keys[1:] if rows[key][low] > 0]
+    better = [key for key in keys[1:] if rows[key]["difference_low"] > 0]
     if not better:
         return simplest
-    return max(better, key=lambda key: rows[key][metric])
+    return max(better, key=lambda key: rows[key]["mean_qwk"])
 
 
 def run(processes=15, model_file=MODEL_FEATURES_FILE, reading_file=READING_FEATURES_FILE, results_dir=MODEL_RESULTS_DIR,
@@ -194,7 +180,7 @@ def run(processes=15, model_file=MODEL_FEATURES_FILE, reading_file=READING_FEATU
         rows[key] = describe(key, "1 pooling", run_config(key, alone, features, name="ordinal", strategy="pooled",
                                                           seeds=seeds, **common))
     stage1 = {"pooled": stage0[chosen["features"]]}
-    for strategy in ("indicator", "combat", "per_dataset"):
+    for strategy in ("indicator", "combat"):
         stage1[strategy] = run_config(f"pooling_{strategy}", nodules, features,
                                       name="ordinal", strategy=strategy, seeds=seeds, **common)
     for strategy, result in stage1.items():
@@ -209,57 +195,28 @@ def run(processes=15, model_file=MODEL_FEATURES_FILE, reading_file=READING_FEATU
     for model, result in stage2.items():
         rows[f"model_{model}"] = describe(f"model_{model}", "2 model", result, reference=stage2["ordinal"])
     chosen["model"] = choose({k: rows[f"model_{k}"] for k in stage2}, list(stage2))
-    best = dict(name=chosen["model"], strategy=chosen["strategy"])
-    final, final_result = dict(best), stage2[chosen["model"]]
+    final, final_result = dict(name=chosen["model"], strategy=chosen["strategy"]), stage2[chosen["model"]]
 
-    # Stage 3: the binary scale. The 1 to 5 model already gives the probability of a rating of 4 or 5 ("from 1 to 5");
-    # a model trained directly on the binary scale is the alternative. The primary metric is the mean AUC.
-    stage3 = {"from_1_to_5": final_result,
-              "direct": run_config(f"binary_direct_{chosen['model']}_{chosen['strategy']}", nodules, features,
-                                   label="suspicious", seeds=seeds, **best, **common)}
-    rows["binary_from_1_to_5"] = describe("binary_from_1_to_5", "3 binary", stage3["from_1_to_5"])
-    rows["binary_direct"] = describe("binary_direct", "3 binary", stage3["direct"], label="suspicious",
-                                     reference=stage3["from_1_to_5"])
-    rows["binary_from_1_to_5"].update(auc_difference=0.0, auc_difference_low=0.0, auc_difference_high=0.0)
-    chosen["binary"] = choose({k: rows[f"binary_{k}"] for k in stage3}, list(stage3), metric="mean_auc",
-                              low="auc_difference_low")
-
-    # Stage 4: extensions of the chosen model. Each one is compared with the chosen configuration by the same rule as
+    # Stage 3: extensions of the chosen model. Each one is compared with the chosen configuration by the same rule as
     # every stage, the chosen configuration being the simplest option.
     chosen["final_model"] = chosen["model"]
-    stage4 = {"chosen": final_result}
+    stage3 = {"chosen": final_result}
     on_strategy = dict(strategy=chosen["strategy"], seeds=seeds, **common)
-    stage4["ordinal_balanced"] = run_config("extension_ordinal_balanced", nodules, features, name="ordinal_balanced",
+    stage3["ordinal_balanced"] = run_config("extension_ordinal_balanced", nodules, features, name="ordinal_balanced",
                                             **on_strategy)
-    stage4["elastic_net"] = run_config("extension_elastic_net", nodules, features, name="elastic_net", **on_strategy)
-    if chosen["strategy"] == "per_dataset" and "random_forest" in stage2:
-        # the ensemble reuses the hyperparameters that the ordinal model and the forest chose in each outer fold
-        base = base_params_from({"ordinal": stage2["ordinal"], "random_forest": stage2["random_forest"]})
-        stage4["ordinal_rf"] = run_config("extension_ordinal_rf", nodules, features, name="ordinal_rf",
-                                          base_params=base, **on_strategy)
-    for key, result in stage4.items():
-        rows[f"extension_{key}"] = describe(f"extension_{key}", "4 extension", result, reference=stage4["chosen"])
-    winner = choose({k: rows[f"extension_{k}"] for k in stage4}, list(stage4))
+    stage3["elastic_net"] = run_config("extension_elastic_net", nodules, features, name="elastic_net", **on_strategy)
+    for key, result in stage3.items():
+        rows[f"extension_{key}"] = describe(f"extension_{key}", "3 extension", result, reference=stage3["chosen"])
+    winner = choose({k: rows[f"extension_{k}"] for k in stage3}, list(stage3))
     if winner != "chosen":
         chosen["final_model"] = winner
         final = dict(name=winner, strategy=chosen["strategy"])
-        final_result = stage4[winner]
+        final_result = stage3[winner]
     final_tag = f"{chosen['final_model']}_{chosen['strategy']}_{chosen['features']}"
 
-    # The final configuration on new seeds. An ensemble first needs the choices of its models on the new seeds.
-    extra = {}
-    if final["name"] in ENSEMBLES:
-        bases = {m: run_config(f"confirmation_base_{m}_{chosen['strategy']}", nodules, features, name=m,
-                               strategy=chosen["strategy"], seeds=confirmation_seeds, **common)
-                 for m in ENSEMBLES[final["name"]]}
-        extra["base_params"] = base_params_from(bases)
-    confirmation = run_config(f"confirmation_{final_tag}", nodules, features, seeds=confirmation_seeds, **final,
-                              **extra, **common)
+    # The final configuration on new seeds, on both scales
+    confirmation = run_config(f"confirmation_{final_tag}", nodules, features, seeds=confirmation_seeds, **final, **common)
     rows["confirmation"] = describe("confirmation", "confirmation", confirmation, readings=readings)
-    if chosen["binary"] == "direct":
-        direct = run_config(f"confirmation_binary_direct_{chosen['model']}_{chosen['strategy']}", nodules, features,
-                            label="suspicious", seeds=confirmation_seeds, **best, **common)
-        rows["confirmation_binary"] = describe("confirmation_binary", "confirmation", direct, label="suspicious")
 
     importance_file = results_dir / f"permutation_importance_{final_tag}.csv"
     if not importance_file.exists():
@@ -268,11 +225,10 @@ def run(processes=15, model_file=MODEL_FEATURES_FILE, reading_file=READING_FEATU
                                                weight=final.get("weight"))
         importance.to_csv(importance_file)
 
-    # A new hospital: trained on every nodule of one dataset, validated on the other. The model is the final one (or,
-    # for an ensemble, the model of stage 2, because an ensemble needs choices from outer folds that do not exist here),
-    # with three sets of features: the diameter alone, the features without and with the wavelet images. Each is
-    # compared, on the same nodules, with the same model in cross validation inside the dataset that is predicted.
-    external_model = final["name"] if final["name"] not in ENSEMBLES else chosen["model"]
+    # A new hospital: trained on every nodule of one dataset, validated on the other. The model is the final one, with
+    # three sets of features: the diameter alone, the features without and with the wavelet images. Each is compared,
+    # on the same nodules, with the same model in cross validation inside the dataset that is predicted.
+    external_model = final["name"]
     sets = {"diameter": ["roi_diameter_mm"], **feature_sets}
     for source in DATASETS:
         target = "LIDC" if source == "LNDb" else "LNDb"
@@ -297,7 +253,7 @@ def run(processes=15, model_file=MODEL_FEATURES_FILE, reading_file=READING_FEATU
     for rule in ("mean", "mode"):
         training = nodules.assign(rating=nodules[f"rating_{rule}"])
         result = run_config(f"label_{rule}_{final_tag}", nodules, features, seeds=seeds, training=training, **final,
-                            **extra_for_seeds(final, stage2), **common)
+                            **common)
         rows[f"label_{rule}"] = describe(f"label_{rule}", "label check", result, reference=final_result,
                                          readings=readings)
     rows["label_median"] = describe("label_median", "label check", final_result, readings=readings)
@@ -307,13 +263,6 @@ def run(processes=15, model_file=MODEL_FEATURES_FILE, reading_file=READING_FEATU
     (results_dir / "chosen.json").write_text(json.dumps(chosen, indent=1))
     print("chosen:", chosen, flush=True)
     return table, chosen
-
-
-def extra_for_seeds(final, stage2):
-    """The choices that an ensemble reuses on the seeds used for choosing (empty for any other model)."""
-    if final["name"] not in ENSEMBLES:
-        return {}
-    return {"base_params": base_params_from({m: stage2[m] for m in ENSEMBLES[final["name"]]})}
 
 
 def main():
