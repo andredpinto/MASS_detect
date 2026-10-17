@@ -158,10 +158,7 @@ src/mass_detect/
     build_patches_and_features.py, run_models.py, run_voxel_sensitivity.py
                                  headless runners for notebooks 04–06
     lndb_exploration_utils.py    helpers used by notebook 01
-    lndb_preprocessing.py, extract_features_pyrad.py,
-    lidc_preprocessing.py, lidc_labels.py, resampling.py
-                                 legacy standalone scripts, superseded by the notebooks
-                                 (extract_features_pyrad still defaults to a removed Params.yml)
+    legacy/                      legacy standalone scripts, superseded by the notebooks
   lndb_utils/                    utilities shipped with the LNDb dataset (vendored)
   tests/                         unit tests
 notebooks/                       the report and the pipeline (00–06)
