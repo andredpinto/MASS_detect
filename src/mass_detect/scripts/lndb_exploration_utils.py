@@ -32,40 +32,26 @@ def read_nods_in_scan(LNDb_id, nods_table): #Reads one CT Scan and returns array
 
     return scan, spacing, origin, nods_scan
 
-def aggregate_columns(series, start_value = None, end_value = None, mode = "characteristic"):
-    vals = sorted(series.dropna()) #Get sorted values
-    if not vals: return np.nan #If it is emptly, return NaN
-    if len(set(vals)) == 1: return vals[0] #If only one value, return it
-    val_range = max(vals) - min(vals) #Range in classifications
-    match mode:
-        case "coordinate":
-            if val_range < 3.0 or len(vals) == 2: return np.mean(vals)
-            range_1 = abs(vals[0] - vals[1])
-            range_2 = abs(vals[1] - vals[2])
-            range_3 = abs(vals[0] - vals[2])
-            if range_1 < 3.0: return np.mean([vals[0], vals[1]])
-            if range_2 < 3.0: return np.mean([vals[1], vals[2]])
-            if range_3 < 3.0: return np.mean([vals[0], vals[2]])
-            return np.mean(vals)
-        case "volume":
-            relative_diff = val_range / min(vals) if min(vals) > 0 else 0
-            if relative_diff <= 0.3 or len(vals) == 2: return np.mean(vals)
-            diff_1 = abs(vals[0] - vals[1]) / min([vals[0], vals[1]]) 
-            diff_2 = abs(vals[1] - vals[2]) / min([vals[1], vals[2]])
-            diff_3 = abs(vals[0] - vals[2]) / min ([vals[0], vals[2]])
-            if diff_1 <= 0.3: return np.mean([vals[0], vals[1]])
-            if diff_2 <= 0.3: return np.mean([vals[1], vals[2]])
-            if diff_3 <= 0.3: return np.mean([vals[0], vals[2]])
-            return np.median(vals)
-        case "characteristic":
-            middle_value = np.ceil((end_value - start_value)/2) #Defines separation point between high and low values
-            if val_range >= end_value - start_value - 1: # Handle large discrepancies
-                if vals.count(max(vals)) == 2: return max(vals) #If majority is the max value, use it
-                if vals.count(min(vals)) == 2: return min(vals) + 1 #If majority is the min value, use it (plus 1 to prioritize detecting classification severity)
-                #If there are 3 different values, use the dominant high/low values
-                high_vals = [v for v in vals if v > middle_value] #High classifications
-                low_vals = [v for v in vals if v < middle_value] #Low classifications
-                if len(high_vals) > 1: return np.mean(high_vals) # Use the mean of the high values
-                if len(low_vals) > 1: return max(low_vals) # Use the max of the low values to prioritize detecting classification severity
-                return middle_value #Return middle value if high/low value counts are balanced
-            return series.mean() #If there is not a big range in classifications, use the mean.
+def aggregate_columns(series, start_value = 1, end_value = 5, coor = False):
+    if coor: return np.median(vals)                                          # Return the median of the coordinates
+    vals = sorted(series.dropna())                                           # Get sorted values
+    if not vals: return np.nan                                               # If it is emptly, return NaN
+    if len(set(vals)) == 1: return vals[0]                                   # If only one value, return it
+    if len(set(vals)) == 2: return np.ceil(np.mean(vals))                    # If only two values, return mean rounded up
+    middle_value = np.ceil((end_value - start_value + 1)/2)                  # Separation point between high and low values
+    val_range = max(vals) - min(vals)                                        # Range in classifications
+    if val_range >= end_value - start_value - 1:                             # Handle large discrepancies
+            high_vals = [v for v in vals if v > middle_value]                # High classifications
+            low_vals = [v for v in vals if v < middle_value]                 # Low classifications
+            middle_vals = [v for v in vals if v == middle_value]             # Middle classifications
+            if len(vals) == 3:
+                if len(high_vals) == 2: return np.ceil(np.mean(high_vals))   # Use mean of high values rounded up
+                if len(low_vals) == 2: return np.ceil(np.mean(low_vals)) + 1 # Use mean of low values rounded up, adding 1 to prioritize severity
+                return np.median(vals)                                       # Otherwise, use the median
+            if len(vals) == 4:
+                if len(high_vals) > 2: return np.ceil(np.mean(high_vals))    # Use mean of high values rounded up
+                if len(low_vals) > 2: return np.ceil(np.mean(low_vals)) + 1  # Use mean of low values rounded up, adding 1 to prioritize severity
+                if len(middle_vals) == 2 and len(high_vals) == 2: return middle_vals + 1 #If two values = 3, then check if others are high or low
+                if len(middle_vals) == 2 and len(low_vals) == 2: return middle_vals   
+                return np.median(vals)                                       # Otherwise, use the median
+    return np.ceil(series.mean())                                            # If not a big range in classifications, use the mean rounded up.
